@@ -1,0 +1,1 @@
+Sube index.html a GitHub reemplazando el actual. Cambios: excluye lotes menores a 1000050000 y calcula con Stock total.

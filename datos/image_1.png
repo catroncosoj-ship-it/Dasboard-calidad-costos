@@ -1,0 +1,1684 @@
+var barsHTML = (typeof barsHTML !== 'undefined') ? barsHTML : '';
+
+const $=id=>document.getElementById(id);
+const SECTIONS=[['resumen','📊 Resumen'],['perdidas','💸 Pérdidas por mes'],['detalle','📋 Detalle lotes'],['stock','⏳ Stock/Vencimientos'],['motivos','🧩 Motivos'],['proveedores','🏭 Proveedores'],['productos','📦 Productos'],['q','✅ Calidad/Q'],['evaluacion','🧪 Evaluación materiales']];
+const MOTIVOS_BASE=['Vencido','Decomiso','Siniestrado','Por Vencer','Reproceso','Diferencia de invent','Defectuoso','Devolucion a proveed'];
+const COLOR={'Vencido':'#c4372d','Decomiso':'#7c3aed','Siniestrado':'#df5a00','Por Vencer':'#b7950b','Reproceso':'#0e6655','Diferencia de invent':'#566573','Defectuoso':'#be123c','Devolucion a proveed':'#2563eb','Sin motivo':'#64748b','Vigente':'#00843d','Crítico 0-10':'#c4372d','Apelación cong. 10-14':'#df5a00','Política cong. 15-25':'#b7950b','Apelación ref. 25-30':'#2563eb','Crítico política 30-40':'#9333ea','Buen estado 40+':'#00843d'};
+const S={active:'resumen',stock:[],loss:[],filters:{},priceMap:{},ingresoMap:{}};
+const COMMENT_STORE_KEY='mvDetalleComentariosGestionV1';
+function loadComments(){try{return JSON.parse(localStorage.getItem(COMMENT_STORE_KEY)||'{}')}catch(e){return {}}}
+function saveComments(map){try{localStorage.setItem(COMMENT_STORE_KEY,JSON.stringify(map||{}))}catch(e){}}
+function commentKey(r){return [r.mat,r.lote,r.motivo,fd(r.fechaCad)].map(x=>String(x||'').trim()).join('|')}
+function getGestionComment(r){return loadComments()[commentKey(r)]||''}
+function setGestionComment(k,v){let m=loadComments(); if(v&&String(v).trim()) m[k]=String(v).trim(); else delete m[k]; saveComments(m)}
+function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function norm(v){return String(v??'').trim()}
+function lower(v){return norm(v).toLowerCase()}
+function num(v){if(v==null||v==='')return 0;if(typeof v==='number')return isNaN(v)?0:v;let s=String(v).replace(/\./g,'').replace(',','.').replace(/[^0-9.-]/g,'');let n=parseFloat(s);return isNaN(n)?0:n}
+function parseDate(v){
+  if(!v)return null;
+  if(v instanceof Date&&!isNaN(v))return v;
+  if(typeof v==='number')return new Date(Math.round((v-25569)*86400000));
+  let s=String(v).trim();
+  if(!s)return null;
+  let m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if(m){let y=+m[3];if(y<100)y+=2000;let d=new Date(y,+m[2]-1,+m[1]);return isNaN(d)?null:d}
+  let d=new Date(s);return isNaN(d)?null:d
+}
+function diffDays(a,b){a=parseDate(a);b=parseDate(b);if(!a||!b)return null;return Math.round((new Date(b.getFullYear(),b.getMonth(),b.getDate())-new Date(a.getFullYear(),a.getMonth(),a.getDate()))/86400000)}
+function diffMonths(a,b){let d=diffDays(a,b);return d==null?null:+(d/30.4375).toFixed(1)}
+function fmtLife(d){return d==null||!isFinite(d)?'—':(d<0?'⚠ Revisar lote':`${fmtNum(d,0)} días (${fmtNum(d/30.4375,1)} meses)`)}
+
+function ym(d){return d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`:'Sin fecha'}
+function fd(d){return d?d.toLocaleDateString('es-CL'):''}
+function fmtCLP(n){return '$ '+Math.round(num(n)).toLocaleString('es-CL')}
+function fmtNum(n,d=1){return num(n).toLocaleString('es-CL',{minimumFractionDigits:d,maximumFractionDigits:d})}
+function pct(n){return (num(n)*100).toFixed(1).replace('.',',')+'%'}
+function sum(a,k='valor'){return a.reduce((s,r)=>s+num(r[k]),0)}
+function uniq(a,k){return new Set(a.map(r=>r[k]).filter(x=>x!==''&&x!=null)).size}
+function group(a,fn){return a.reduce((m,r)=>{let k=typeof fn==='function'?fn(r):r[fn];k=k||'—';(m[k]||(m[k]=[])).push(r);return m},{})}
+function badge(t){let cls='b-dif';let s=String(t||'');if(s.includes('Vencido')||s.includes('Crítico 0'))cls='b-vencido';else if(s.includes('Decomiso'))cls='b-decomiso';else if(s.includes('Siniestrado'))cls='b-siniestrado';else if(s.includes('Por Vencer')||s.includes('Política'))cls='b-por';else if(s.includes('Reproceso'))cls='b-reproceso';else if(s.includes('Q'))cls='b-q';else if(s.includes('Buen')||s==='Vigente'||s==='Sin Q')cls='b-ok';return `<span class="badge ${cls}">${esc(s||'—')}</span>`}
+function estadoDias(d){d=num(d);if(d<0)return 'Vencido SAP'; if(d<=10)return 'Crítico 0-10'; if(d<=14)return 'Apelación cong. 10-14'; if(d<=25)return 'Política cong. 15-25'; if(d<=30)return 'Apelación ref. 25-30'; if(d<=40)return 'Crítico política 30-40'; return 'Buen estado 40+'}
+async function readWB(file){
+  if(!file) throw new Error('Archivo no seleccionado.');
+  if(typeof XLSX==='undefined') throw new Error('No se cargó la librería XLSX. Revisa conexión a internet o vuelve a abrir el archivo.');
+  try{
+    const data = await file.arrayBuffer();
+    return XLSX.read(data,{type:'array',cellDates:true});
+  }catch(err){
+    throw new Error('No se pudo leer el archivo "'+file.name+'". Verifica que sea Excel .xlsx válido. Detalle: '+(err&&err.message?err.message:String(err||'')));
+  }
+}
+
+/* === V35 CARGA AUTOMÁTICA DESDE GITHUB / VERCEL ===
+   Estos archivos deben existir en el repo dentro de la carpeta /datos.
+   Si cambias el nombre de algún Excel en GitHub, actualiza también estas rutas. */
+const AUTO_DATA_FILES = {
+  stock: 'datos/LISTO STOCK PLANILLA WEB 25-05.XLSX',
+  precios: 'datos/Precios por proveedor 07-05.XLSX',
+  mb51: 'datos/MB51 PARA PLANILLA WEB FECHA INGRESO 27.05.XLSX'
+};
+
+async function readWBFromUrl(url,label){
+  if(typeof XLSX==='undefined') throw new Error('No se cargó la librería XLSX.');
+  const safeUrl = encodeURI(url) + '?v=' + Date.now(); // evita caché al actualizar archivos en GitHub/Vercel
+  const res = await fetch(safeUrl,{cache:'no-store'});
+  if(!res.ok){
+    throw new Error('No se pudo descargar '+label+' desde '+url+' (HTTP '+res.status+'). Revisa que el archivo exista en GitHub/Vercel con ese nombre exacto.');
+  }
+  const data = await res.arrayBuffer();
+  return XLSX.read(data,{type:'array',cellDates:true});
+}
+
+async function autoLoadGithubFiles(){
+  try{
+    if(window.__autoGithubLoading) return;
+    window.__autoGithubLoading = true;
+    const st = $('status');
+    if(st) st.textContent = 'Cargando base centralizada desde GitHub...';
+
+    const swb = await readWBFromUrl(AUTO_DATA_FILES.stock,'Stock SAP / Calidad');
+    const pwb = await readWBFromUrl(AUTO_DATA_FILES.precios,'Precios por proveedor');
+    const iwb = await readWBFromUrl(AUTO_DATA_FILES.mb51,'MB51 Fecha ingreso');
+
+    const stockData = aoa(swb), priceData = aoa(pwb), ingresoData = aoa(iwb);
+    if(!stockData.length) throw new Error('El archivo Stock SAP de GitHub no tiene filas visibles.');
+    if(!priceData.length) throw new Error('El archivo de precios de GitHub no tiene filas visibles.');
+    if(!ingresoData.length) throw new Error('El archivo MB51 de GitHub no tiene filas visibles.');
+
+    process(stockData,priceData,ingresoData);
+    if(st) st.textContent = `Base GitHub cargada: ${S.stock.length} registros SAP · ${S.loss.length} con motivo · ${Object.keys(S.ingresoMap||{}).length} ingresos MB51.`;
+    renderAll();
+    if(typeof setActive === 'function') setActive('resumen');
+  }catch(err){
+    console.error('Error carga automática GitHub:', err);
+    const st = $('status');
+    if(st) st.textContent = 'No se pudo cargar base GitHub. Usa carga manual o revisa nombres en /datos.';
+    alert('No se pudo cargar automáticamente desde GitHub/Vercel: ' + (err&&err.message?err.message:String(err||'')));
+  }finally{
+    window.__autoGithubLoading = false;
+  }
+}
+function aoa(wb){let ws=wb.Sheets[wb.SheetNames[0]];return XLSX.utils.sheet_to_json(ws,{defval:''})}
+function buildPriceMap(rows){let map={};for(const r of rows){let mat=norm(r['Material']).split('.')[0];let precio=num(r['Precio neto']);let fecha=parseDate(r['Fecha documento']);if(!mat||!precio)continue;if(!map[mat]||((fecha||0)>(map[mat].fecha||0)))map[mat]={precio,fecha}}return map}
+function ingresoKey(mat,lote){return norm(mat).split('.')[0]+'|'+norm(lote).split('.')[0]}
+function buildIngresoMap(rows){
+  let map={};
+  for(const r of rows){
+    let mat=norm(r['Material']).split('.')[0];
+    let lote=norm(r['Lote']).split('.')[0];
+    let fecha=parseDate(r['Fe.contabilización'])||parseDate(r['Fe.contabilizacion'])||parseDate(r['Fecha contabilización'])||parseDate(r['Fecha contabilizacion']);
+    if(!mat||!lote||!fecha)continue;
+    let k=ingresoKey(mat,lote);
+    // Si el lote aparece más de una vez en MB51, se usa la primera fecha contable como fecha real de ingreso.
+    if(!map[k] || fecha < map[k]) map[k]=fecha;
+  }
+  return map;
+}
+function motivoFrom(text){let m=norm(text);if(!m)return '';let ml=lower(m);if(ml.includes('vencido'))return 'Vencido';if(ml.includes('decomiso'))return 'Decomiso';if(ml.includes('siniestr'))return 'Siniestrado';if(ml.includes('por vencer'))return 'Por Vencer';if(ml.includes('reproceso'))return 'Reproceso';if(ml.includes('diferencia'))return 'Diferencia de invent';if(ml.includes('defect'))return 'Defectuoso';if(ml.includes('devol'))return 'Devolucion a proveed';return m}
+function process(stockRows, priceRows, ingresoRows=[]){
+  S.priceMap=buildPriceMap(priceRows);
+  S.ingresoMap=buildIngresoMap(ingresoRows);
+  S.stock=[];
+  S.loss=[];
+  for(const r of stockRows){
+    let mat=norm(r['Material']).split('.')[0];
+    let lote=norm(r['Lote']).split('.')[0];
+    let precio=(S.priceMap[mat]||{}).precio||0;
+    let pfecha=(S.priceMap[mat]||{}).fecha||null;
+    let stock=num(r['Stock total']);
+
+    let fechaMov=parseDate(r['Fecha Movimiento']);
+    let fechaCad=parseDate(r['FeCaduc/FePreferCons'])||parseDate(r['Fecha Vencimiento'])||parseDate(r['Fecha vencimiento'])||parseDate(r['Vencimiento']);
+
+    // Fecha de recepción/ingreso: se toma SOLO desde MB51 columna Fe.contabilización.
+    // No usar Fecha EM, Última entrada ni Fecha Movimiento en este campo.
+    let fechaIngreso=S.ingresoMap[ingresoKey(mat,lote)]||null;
+
+    // Fecha de fabricación real del lote desde SAP. No usar Fecha Creación Lote porque no siempre coincide con fabricación.
+    let fechaCrea=parseDate(r['Fe.fabricación'])||parseDate(r['Fecha Fabricación'])||parseDate(r['Fecha fabricacion'])||parseDate(r['Fecha Fabricacion'])||null;
+
+    // Días Duración viene directo desde SAP/planilla.
+    let diasDuracion = num(r['Días Duración']||r['Dias Duración']||r['Días Duracion']||r['Dias Duracion']);
+
+    let dias=num(r['Días Disponible']);
+    let motivo=motivoFrom(r['Desc. Motivo del movimiento']);
+    let q=norm(r['Diferenciación stock']).toUpperCase()==='Q';
+    let comentario=norm(r['Desc. Motivo del movimiento'])||norm(r['Texto de clase de movimiento'])||'';
+
+    // Campos de vida útil anulados para panel: no se muestran en KPI ni tabla.
+    let vidaTotalDias=diffDays(fechaCrea,fechaCad);
+    if((vidaTotalDias==null||!isFinite(vidaTotalDias)) && num(r['Días Duración'])>0) vidaTotalDias=num(r['Días Duración']);
+    let vidaIngresoDiasRaw=diffDays(fechaIngreso,fechaCad);
+    let ingresoPosteriorVencimiento=vidaIngresoDiasRaw!=null && vidaIngresoDiasRaw<0;
+    let vidaIngresoDias=ingresoPosteriorVencimiento?null:vidaIngresoDiasRaw;
+    let vidaTotalMeses=vidaTotalDias==null?null:+(vidaTotalDias/30.4375).toFixed(1);
+    let vidaIngresoMeses=vidaIngresoDias==null?null:+(vidaIngresoDias/30.4375).toFixed(1);
+    let pctConsumida=(vidaTotalDias&&vidaIngresoDias!=null)?Math.max(0,Math.min(1,1-(vidaIngresoDias/vidaTotalDias))):null;
+
+    let base={
+      mat,desc:norm(r['Descrip. Material'])||'—',proveedor:norm(r['Nombre Proveedor'])||'—',lote,
+      fechaMov,mes:ym(fechaCad),fechaCad,fechaIngreso,fechaCrea,dias,stock,unidad:norm(r['Unidad medida base'])||'KG',
+      precio,pfecha,valor:stock*precio,motivoCod:norm(r['Motivo movimiento']),mov:norm(r['Texto de clase de movimiento']),
+      motivo,comentario,q,obsoleto:num(lote)<1000050000,
+      vidaTotalDias,vidaIngresoDias,vidaTotalMeses,vidaIngresoMeses,pctConsumida,ingresoPosteriorVencimiento,diasDuracion
+    };
+    S.stock.push({...base,estado:estadoDias(dias)});
+    if(motivo){S.loss.push(base)}
+  }
+}
+function filtered(rows,scope){let f=S.filters[scope]||{};let out=rows;let q=lower(f.search);if(q)out=out.filter(r=>[r.mes,r.motivo,r.mat,r.desc,r.proveedor,r.lote,r.comentario,r.mov].some(x=>lower(x).includes(q)));if(f.mes&&f.mes!=='Todos')out=out.filter(r=>r.mes===f.mes);let df=f.dateFrom?parseDate(f.dateFrom):null,dt=f.dateTo?parseDate(f.dateTo):null;if(df)out=out.filter(r=>r.fechaCad&&r.fechaCad>=df);if(dt)out=out.filter(r=>r.fechaCad&&r.fechaCad<=dt);if(f.motivo&&f.motivo!=='Todos')out=out.filter(r=>r.motivo===f.motivo);if(f.estado&&f.estado!=='Todos')out=out.filter(r=>r.estado===f.estado);if(f.prov&&f.prov!=='Todos')out=out.filter(r=>r.proveedor===f.prov);if(f.mat&&f.mat!=='Todos')out=out.filter(r=>r.mat===f.mat);if(f.q&&f.q!=='Todos')out=out.filter(r=>f.q==='Q'?r.q:!r.q);let min=f.min!==''&&f.min!=null?num(f.min):null,max=f.max!==''&&f.max!=null?num(f.max):null;if(min!=null)out=out.filter(r=>num(r.dias)>=min);if(max!=null)out=out.filter(r=>num(r.dias)<=max);return out}
+function options(arr,val){return [...new Set(arr.filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b))).map(x=>`<option ${x===val?'selected':''}>${esc(x)}</option>`).join('')}
+function filters(scope,kind){let base=kind==='stock'?S.stock.filter(r=>!r.obsoleto&&num(r.dias)>=0):S.loss;let f=S.filters[scope]||{};return `<div class="filters"><div class="field"><label>Buscar</label><input data-s="${scope}" data-f="search" value="${esc(f.search||'')}" placeholder="Material, producto, lote, proveedor..."></div><div class="field"><label>Mes vencimiento</label><select data-s="${scope}" data-f="mes"><option>Todos</option>${options(base.map(r=>r.mes),f.mes)}</select></div>${kind==='stock'?`<div class="field"><label>Estado</label><select data-s="${scope}" data-f="estado"><option>Todos</option>${options(base.map(r=>r.estado),f.estado)}</select></div>`:`<div class="field"><label>Vencidos desde</label><input data-s="${scope}" data-f="dateFrom" type="date" value="${esc(f.dateFrom||'')}"></div><div class="field"><label>Vencidos hasta</label><input data-s="${scope}" data-f="dateTo" type="date" value="${esc(f.dateTo||'')}"></div><div class="field"><label>Motivo</label><select data-s="${scope}" data-f="motivo"><option>Todos</option>${options(base.map(r=>r.motivo),f.motivo)}</select></div>`}<div class="field"><label>Proveedor</label><select data-s="${scope}" data-f="prov"><option>Todos</option>${options(base.map(r=>r.proveedor),f.prov)}</select></div><div class="field"><label>Material</label><select data-s="${scope}" data-f="mat"><option>Todos</option>${options(base.map(r=>r.mat),f.mat)}</select></div><div class="field"><label>Días mín.</label><input data-s="${scope}" data-f="min" type="number" value="${esc(f.min||'')}"></div><div class="field"><label>Días máx.</label><input data-s="${scope}" data-f="max" type="number" value="${esc(f.max||'')}"></div></div>`}
+function kpiHTML(rows,type='loss'){return `<div class="kpi-row"><div class="kpi red"><div class="v">${fmtCLP(sum(rows))}</div><div class="l">Valor total</div></div><div class="kpi orange"><div class="v">${fmtNum(sum(rows,'stock'))} KG</div><div class="l">Cantidad total</div></div><div class="kpi navy"><div class="v">${fmtNum(rows.length,0)} lotes<br>${fmtNum(uniq(rows,'mat'),0)} materiales</div><div class="l">Registros únicos</div></div></div>`}
+function avgVal(rows,k){let vals=rows.map(r=>r[k]).filter(v=>v!=null&&isFinite(v));return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null}
+function kpiLifeHTML(rows){return ''}
+
+function chartMonthly(rows){
+  let by=Object.entries(group(rows,'mes')).map(([m,rs])=>({mes:m,valor:sum(rs),kg:sum(rs,'stock'),lotes:rs.length})).sort((a,b)=>a.mes.localeCompare(b.mes));
+  if(!by.length)return '<div class="empty">Sin datos</div>';
+  let total=sum(rows), peak=by.reduce((a,b)=>b.valor>a.valor?b:a,by[0]);
+  let last=[...by].reverse().find(x=>x.valor>0)||by[by.length-1];
+  let improvement=(peak.valor>0 && last.valor<=peak.valor)?Math.round((1-last.valor/peak.valor)*100):0;
+  let lastIdx=by.findIndex(x=>x.mes===last.mes), prev= lastIdx>0?by[lastIdx-1]:null;
+  let mom=prev&&prev.valor>0?Math.round((last.valor/prev.valor-1)*100):null;
+  let data=by.length>14?by.slice(-14):by;
+  let W=920,H=360,pL=64,pR=62,pT=44,pB=58,innerW=W-pL-pR,innerH=H-pT-pB;
+  let maxVal=Math.max(1,...data.map(d=>d.valor));
+  let maxKg=Math.max(1,...data.map(d=>d.kg));
+  let step=innerW/data.length, bw=Math.max(18,Math.min(46,step*.56));
+  let x=i=>pL+i*step+step/2;
+  let yVal=v=>pT+innerH-(v/maxVal)*innerH;
+  let yKg=v=>pT+innerH-(v/maxKg)*innerH;
+  let grid=[0,.25,.5,.75,1].map(t=>`<line x1="${pL}" y1="${pT+innerH*(1-t)}" x2="${W-pR}" y2="${pT+innerH*(1-t)}" stroke="#e2e8f0"/>`).join('');
+  let bars=data.map((d,i)=>{
+    let h=(d.valor/maxVal)*innerH, xx=x(i)-bw/2, yy=pT+innerH-h;
+    let isPeak=d.mes===peak.mes, isLast=d.mes===last.mes;
+    let fill=isPeak?'#dc2626':(isLast?'#00843d':'#16a34a');
+    return `<rect x="${xx.toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(3,h).toFixed(1)}" rx="8" fill="${fill}" opacity="${isPeak||isLast?'.95':'.62'}"><title>${esc(d.mes)} · ${fmtCLP(d.valor)} · ${fmtNum(d.kg)} KG</title></rect>` +
+           `<text x="${x(i).toFixed(1)}" y="${Math.max(18,yy-8).toFixed(1)}" text-anchor="middle" font-size="10" fill="#0f5132" font-weight="900">${d.valor?('$'+Math.round(d.valor/1000000).toLocaleString('es-CL')+'M'):'$0'}</text>`;
+  }).join('');
+  let pts=data.map((d,i)=>[x(i),yKg(d.kg),d]);
+  let path=pts.map((pt,i)=>(i?'L':'M')+pt[0].toFixed(1)+' '+pt[1].toFixed(1)).join(' ');
+  let circles=pts.map(pt=>`<circle cx="${pt[0].toFixed(1)}" cy="${pt[1].toFixed(1)}" r="5" fill="#fff" stroke="#2563eb" stroke-width="3"><title>${esc(pt[2].mes)} · ${fmtNum(pt[2].kg)} KG</title></circle>`).join('');
+  let labels=data.map((d,i)=>`<text x="${x(i).toFixed(1)}" y="${H-26}" text-anchor="middle" font-size="11" fill="#334155" font-weight="800">${esc(d.mes.slice(5))}</text><text x="${x(i).toFixed(1)}" y="${H-12}" text-anchor="middle" font-size="10" fill="#64748b">${esc(d.mes.slice(0,4))}</text>`).join('');
+  let status = improvement>0 ? `MEJORA SOSTENIDA: -${improvement}% desde el pico ${esc(peak.mes)} hasta ${esc(last.mes)}` : `TENDENCIA EN REVISIÓN: último mes igual o superior al pico visible`;
+  let momTxt = mom==null?'Sin comparación mes anterior':(mom<=0?`Último mes baja ${Math.abs(mom)}% vs mes anterior`:`Último mes sube ${mom}% vs mes anterior`);
+  return `<div class="trend-card"><div class="trend-head"><div><b>📈 ${status}</b><span>${momTxt}. Click en un mes para abrir el detalle filtrado.</span></div><div class="trend-pill">Pico: ${fmtCLP(peak.valor)}<br>Último: ${fmtCLP(last.valor)}</div></div><div class="mv15-legend"><span><i class="mv15-dot val"></i>Valor perdido ($)</span><span><i class="mv15-dot kg"></i>Cantidad (KG)</span><span><i class="mv15-dot" style="background:#dc2626"></i>Pico máximo</span></div><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${grid}<line x1="${pL}" y1="${pT+innerH}" x2="${W-pR}" y2="${pT+innerH}" stroke="#cbd5e1"/><line x1="${pL}" y1="${pT}" x2="${pL}" y2="${pT+innerH}" stroke="#cbd5e1"/>${bars}<path d="${path}" fill="none" stroke="#2563eb" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>${circles}${labels}<text x="${pL}" y="24" font-size="13" fill="#00843d" font-weight="950">Valor perdido CLP</text><text x="${W-pR}" y="24" text-anchor="end" font-size="13" fill="#2563eb" font-weight="950">Cantidad KG</text></svg><div class="trend-foot">✅ La lectura ejecutiva se centra en la reducción desde el mes peak y en el último mes disponible.</div></div>`
+}
+function chartMotivos(rows){
+  let entries=Object.entries(group(rows,'motivo')).map(([k,rs])=>({motivo:k,valor:sum(rs),kg:sum(rs,'stock'),lotes:rs.length})).sort((a,b)=>b.valor-a.valor);
+  if(!entries.length)return '<div class="empty">Sin datos</div>';
+  let max=Math.max(...entries.map(e=>e.valor),1), total=entries.reduce((s,e)=>s+e.valor,0);
+  return `<div class="motivo-card"><div class="trend-head"><div><b>✅ Pérdida por motivo priorizada</b><span>Ordenado de mayor a menor impacto para enfocar acciones correctivas.</span></div><div class="trend-pill">Principal: ${esc(entries[0].motivo)}<br>${pct(total?entries[0].valor/total:0)} del total</div></div><div class="motivo-bars">${entries.map((e,i)=>`<div class="motivo-row"><div class="motivo-name">${badge(e.motivo)}</div><div class="motivo-track"><div class="motivo-fill" style="width:${Math.max(2,e.valor/max*100)}%;background:${COLOR[e.motivo]||'#64748b'}"></div></div><div class="motivo-val"><b>${fmtCLP(e.valor)}</b><small>${fmtNum(e.kg)} KG · ${pct(total?e.valor/total:0)}</small></div></div>`).join('')}</div><div class="trend-foot">✅ Usar este panel para atacar primero los motivos con mayor valor perdido.</div></div>`
+}
+
+function sortControls(scope){
+  let f=S.filters[scope]||{};
+  return `<div class="sort-panel"><div class="field"><label>Ordenar por</label><select data-s="${scope}" data-f="sortBy"><option value="valor" ${(!f.sortBy||f.sortBy==='valor')?'selected':''}>Valor perdido</option><option value="kg" ${f.sortBy==='kg'?'selected':''}>Cantidad KG</option><option value="lotes" ${f.sortBy==='lotes'?'selected':''}>N° lotes</option><option value="mats" ${f.sortBy==='mats'?'selected':''}>Materiales únicos</option><option value="grupo" ${f.sortBy==='grupo'?'selected':''}>Nombre / Grupo</option></select></div><div class="field"><label>Dirección</label><select data-s="${scope}" data-f="sortDir"><option value="desc" ${(!f.sortDir||f.sortDir==='desc')?'selected':''}>Mayor a menor</option><option value="asc" ${f.sortDir==='asc'?'selected':''}>Menor a mayor</option></select></div></div>`
+}
+function applySort(entries,scope){
+  let f=S.filters[scope]||{}, by=f.sortBy||'valor', dir=f.sortDir||'desc';
+  entries.sort((a,b)=>{
+    let av=by==='grupo'?String(a.k||''):num(a[by]);
+    let bv=by==='grupo'?String(b.k||''):num(b[by]);
+    if(by==='grupo') return dir==='asc'?av.localeCompare(bv):bv.localeCompare(av);
+    return dir==='asc'?av-bv:bv-av;
+  });
+  return entries;
+}
+function chartTopGroups(rows,keyFn,limit=10,scope='proveedores'){
+  let all=Object.entries(group(rows,keyFn)).map(([k,rs])=>({k,valor:sum(rs),kg:sum(rs,'stock'),lotes:rs.length,mats:uniq(rs,'mat')}));
+  let entries=applySort(all,scope).slice(0,limit);
+  if(!entries.length)return '<div class="empty">Sin datos</div>';
+  let maxVal=Math.max(...entries.map(e=>e.valor),1), maxKg=Math.max(...entries.map(e=>e.kg),1);
+  let total=sum(rows);
+  return `<div class="provider-legend"><span><i class="provider-dot"></i>Valor perdido</span><span><i class="provider-dot kg"></i>Cantidad KG</span><span>Top ${entries.length} según orden seleccionado</span></div><div class="provider-chart">${entries.map((e,i)=>`<div class="provider-row"><div class="provider-rank">${i+1}</div><div class="provider-name" title="${esc(e.k)}">${esc(e.k)}</div><div class="provider-bars"><div class="provider-track" title="Valor: ${fmtCLP(e.valor)}"><div class="provider-fill-value" style="width:${Math.max(2,e.valor/maxVal*100)}%"></div></div><div class="provider-track" title="KG: ${fmtNum(e.kg)}"><div class="provider-fill-kg" style="width:${Math.max(2,e.kg/maxKg*100)}%"></div></div></div><div class="provider-metrics"><b>${fmtCLP(e.valor)}</b>${fmtNum(e.kg)} KG · ${fmtNum(e.lotes,0)} lotes<br>${pct(total?e.valor/total:0)} del total</div></div>`).join('')}</div>`
+}
+function executiveAlerts(loss, stockValid){
+  const venc=loss.filter(r=>r.motivo==='Vencido');
+  const riesgo=stockValid.filter(r=>r.dias<=30);
+  const sinPrecio=loss.filter(r=>!r.precio);
+  const sinComent=loss.filter(r=>!String(getGestionComment(r)||'').trim()).length;
+  const clsV=sum(venc)>500000?'danger':'warn';
+  const clsR=riesgo.length?'warn':'info';
+  return `<div class="v37-alert-grid">
+    <div class="v37-alert ${clsV}"><b>${fmtCLP(sum(venc))}</b><span>Vencidos valorizados</span><small>${fmtNum(venc.length,0)} lotes · ${fmtNum(sum(venc,'stock'))} KG.</small></div>
+    <div class="v37-alert ${clsR}"><b>${fmtNum(riesgo.length,0)}</b><span>Lotes riesgo ≤30 días</span><small>Vista rápida para priorizar consumo o revisión.</small></div>
+    <div class="v37-alert info"><b>${fmtNum(sinPrecio.length,0)}</b><span>Registros sin precio</span><small>Revisar cruce con OC para valorizar correctamente.</small></div>
+    <div class="v37-alert ${sinComent?'warn':'info'}"><b>${fmtNum(sinComent,0)}</b><span>Sin comentario gestión</span><small>Útil para cerrar explicación de vencimientos.</small></div>
+  </div>`;
+}
+function renderResumen(){let loss=S.loss, stockValid=S.stock.filter(r=>!r.obsoleto&&num(r.dias)>=0);let venc=loss.filter(r=>r.motivo==='Vencido');return `<section class="section active" id="sec-resumen">${executiveAlerts(loss,stockValid)}${kpiHTML(loss)}${kpiLifeHTML(loss)}<div class="grid2"><div class="card"><div class="section-title">Pérdida por mes de vencimiento</div><div class="card-pad">${chartMonthly(loss)}</div></div><div class="card"><div class="section-title">Pérdida por motivo</div><div class="card-pad">${chartMotivos(loss)}</div></div></div><div class="grid3"><div class="card"><div class="section-title">Vencidos</div><div class="card-pad"><b>${fmtCLP(sum(venc))}</b><br><span class="small">${fmtNum(venc.length,0)} lotes · ${fmtNum(sum(venc,'stock'))} KG</span></div></div><div class="card"><div class="section-title">Stock riesgo ≤30 días</div><div class="card-pad"><b>${fmtCLP(sum(stockValid.filter(r=>r.dias<=30)))}</b><br><span class="small">Solo apartado Stock/Vencimientos aplica restricción de lote.</span></div></div><div class="card"><div class="section-title">Sin precio</div><div class="card-pad"><b>${fmtNum(loss.filter(r=>!r.precio).length,0)}</b><br><span class="small">Registros con motivo sin cruce de precio.</span></div></div></div></section>`}
+function renderPerdidas(){let rows=filtered(S.loss,'perdidas');let meses=Object.entries(group(rows,'mes')).sort((a,b)=>a[0].localeCompare(b[0]));let total=sum(rows);return `<section class="section" id="sec-perdidas">${filters('perdidas','loss')}${kpiHTML(rows)}${kpiLifeHTML(rows)}<div class="card"><div class="section-title">Pérdida por mes de vencimiento real</div><div class="table-wrap"><table><thead><tr><th>Mes de Vencimiento<br>(FeCaduc/FePreferCons)</th><th>N° Lotes</th><th>Materiales<br>Únicos</th><th>Cantidad<br>(KG)</th><th>Valor Perdido<br>(CLP)</th><th>% del Total</th></tr></thead><tbody>${meses.map(([m,rs])=>`<tr><td>${esc(m)}</td><td class="c">${fmtNum(rs.length,0)}</td><td class="c">${fmtNum(uniq(rs,'mat'),0)}</td><td class="r">${fmtNum(sum(rs,'stock'))}</td><td class="r">${fmtCLP(sum(rs))}</td><td class="c">${pct(total?sum(rs)/total:0)}</td></tr>`).join('')}<tr class="total-foot"><td>TOTAL GENERAL</td><td class="c">${fmtNum(rows.length,0)}</td><td class="c">${fmtNum(uniq(rows,'mat'),0)}</td><td class="r">${fmtNum(sum(rows,'stock'))}</td><td class="r">${fmtCLP(total)}</td><td class="c">100,0%</td></tr></tbody></table></div></div><div class="card"><div class="section-title">Gráfico mensual legible</div><div class="card-pad">${chartMonthly(rows)}</div></div></section>`}
+function renderDetalle(){let allRows=filtered(S.loss,'detalle').sort((a,b)=>b.valor-a.valor);let f=S.filters.detalle||{};let rows=allRows.filter(r=>{let c=getGestionComment(r).trim(); if(f.comentarioGestion==='Con comentario')return !!c; if(f.comentarioGestion==='Sin comentario')return !c; return true});return `<section class="section" id="sec-detalle">${filters('detalle','loss')}${kpiHTML(rows)}<div class="card"><div class="section-title">Detalle completo de lotes con motivo (${rows.length} registros)</div><div class="detail-comment-tools"><div class="field"><label>Comentarios gestión</label><select data-s="detalle" data-f="comentarioGestion"><option ${(!f.comentarioGestion||f.comentarioGestion==='Todos')?'selected':''}>Todos</option><option ${f.comentarioGestion==='Con comentario'?'selected':''}>Con comentario</option><option ${f.comentarioGestion==='Sin comentario'?'selected':''}>Sin comentario</option></select></div><div class="detail-comment-help">Escribe directo en la tabla. Edita el comentario y presiona Aplicar para guardarlo. Luego puedes modificarlo y volver a aplicar.</div></div><div class="table-wrap"><table><thead><tr><th>Mes<br>Vencimiento</th><th>Motivo</th><th>Material</th><th class="desc">Descripción</th><th class="prov">Proveedor</th><th>Lote</th><th>Fecha<br>Fabricación</th><th>Fecha<br>Recepción</th><th>Fecha<br>Vencimiento</th><th>Días<br>Duración</th><th>Cantidad<br>(KG)</th><th>Unidad</th><th>Valor<br>Perdido (CLP)</th><th class="comment-col">Comentario<br>gestión</th></tr></thead><tbody><tr class="total-row"><td>TOTAL</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="r">${fmtNum(sum(rows,'stock'))}</td><td></td><td class="r">${fmtCLP(sum(rows))}</td><td></td></tr>${rows.map((r,i)=>{let k=commentKey(r);let c=getGestionComment(r);let sample= i===0 && !c ? 'Ej: Fecha SAP incorrecta respecto a ficha técnica. Reclamo enviado a proveedor / Calidad.' : '';return `<tr><td>${esc(r.mes)}</td><td>${badge(r.motivo)}</td><td class="c">${esc(r.mat)}</td><td class="desc">${esc(r.desc)}</td><td class="prov">${esc(r.proveedor)}</td><td class="c">${esc(r.lote)}</td><td class="c">${fd(r.fechaCrea)}</td><td class="c">${fd(r.fechaIngreso)}</td><td class="c">${fd(r.fechaCad)}</td><td class="c"><b>${r.diasDuracion?fmtNum(r.diasDuracion,0)+' días':'—'}</b></td><td class="r">${fmtNum(r.stock)}</td><td class="c">${esc(r.unidad)}</td><td class="r" style="background:#fff2cc"><b>${fmtCLP(r.valor)}</b></td><td class="comment-cell"><div class="comment-card"><div class="comment-top"><span class="comment-title">📝 Comentario gestión</span><span class="comment-chip">Editable</span></div><textarea class="comment-box" data-comment-key="${esc(k)}" placeholder="${esc(sample||'Agregar motivo, acción o responsable...')}">${esc(c)}</textarea><div class="comment-actions"><button type="button" class="comment-apply" data-comment-key="${esc(k)}">✓ Aplicar comentario</button><span class="comment-saved ${c?'ok':''}">${c?'💾 Guardado':'Pendiente'}</span></div></div></td></tr>`}).join('')}</tbody></table></div></div></section>`}
+function renderStock(){let base=S.stock.filter(r=>!r.obsoleto&&num(r.dias)>=0);let rows=filtered(base,'stock').sort((a,b)=>a.dias-b.dias);return `<section class="section" id="sec-stock">${filters('stock','stock')}<div class="kpi-row"><div class="kpi green"><div class="v">${fmtNum(rows.length,0)}</div><div class="l">Registros visibles</div></div><div class="kpi orange"><div class="v">${fmtNum(sum(rows,'stock'))} KG</div><div class="l">Stock total</div></div><div class="kpi navy"><div class="v">${fmtCLP(sum(rows))}</div><div class="l">Valor inventario</div></div></div><div class="card"><div class="section-title">Stock y vencimientos - Restricción aplicada solo aquí</div><div class="table-wrap"><table><thead><tr><th>Estado</th><th>Q</th><th>Material</th><th class="desc">Descripción</th><th class="prov">Proveedor</th><th>Lote</th><th>Creación<br>Lote</th><th>Fecha<br>Vencimiento</th><th>Días<br>Disponibles</th><th>Stock<br>Total</th><th>Precio</th><th>Valor</th><th>Comentario</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${badge(r.estado)}</td><td>${r.q?badge('Q'):badge('Sin Q')}</td><td class="c">${esc(r.mat)}</td><td class="desc">${esc(r.desc)}</td><td class="prov">${esc(r.proveedor)}</td><td class="c">${esc(r.lote)}</td><td class="c">${fd(r.fechaCrea)}</td><td class="c">${fd(r.fechaCad)}</td><td class="r">${fmtNum(r.dias,0)}</td><td class="r">${fmtNum(r.stock)}</td><td class="r">${fmtCLP(r.precio)}</td><td class="r">${fmtCLP(r.valor)}</td><td>${esc(r.comentario||'—')}</td></tr>`).join('')}</tbody></table></div></div></section>`}
+function renderGroup(scope,title,keyFn){let rows=filtered(S.loss,scope);let entries=Object.entries(group(rows,keyFn)).map(([k,rs])=>({k,rs,valor:sum(rs),kg:sum(rs,'stock'),lotes:rs.length,mats:uniq(rs,'mat')}));entries=applySort(entries,scope);let chart = scope==='proveedores'?`<div class="card"><div class="section-title">Top 10 proveedores - comparativo valor y KG</div><div class="card-pad">${sortControls(scope)}${chartTopGroups(rows,keyFn,10,scope)}</div></div>`:`<div class="card card-pad">${sortControls(scope)}</div>`;return `<section class="section" id="sec-${scope}">${filters(scope,'loss')}${chart}<div class="card"><div class="section-title">${esc(title)}</div><div class="table-wrap"><table><thead><tr><th>Grupo</th><th>N° Lotes</th><th>Materiales<br>Únicos</th><th>Cantidad<br>(KG)</th><th>Valor Perdido<br>(CLP)</th><th>% del Total</th><th>Motivo principal</th></tr></thead><tbody>${entries.map(e=>{let main=Object.entries(group(e.rs,'motivo')).map(([m,rs])=>[m,sum(rs)]).sort((a,b)=>b[1]-a[1])[0]||['—',0];let total=sum(rows);return `<tr><td class="desc"><b>${esc(e.k)}</b></td><td class="c">${fmtNum(e.lotes,0)}</td><td class="c">${fmtNum(e.mats,0)}</td><td class="r">${fmtNum(e.kg)}</td><td class="r">${fmtCLP(e.valor)}</td><td class="c">${pct(total?e.valor/total:0)}</td><td>${badge(main[0])}</td></tr>`}).join('')}</tbody></table></div></div></section>`}
+function renderMotivos(){let rows=filtered(S.loss,'motivos');return `<section class="section" id="sec-motivos">${filters('motivos','loss')}<div class="grid2"><div class="card"><div class="section-title">Gráfico por motivo</div><div class="card-pad">${chartMotivos(rows)}</div></div><div class="card"><div class="section-title">Tabla por motivo</div><div class="table-wrap"><table><thead><tr><th>Motivo</th><th>Lotes</th><th>Materiales</th><th>KG</th><th>Valor</th></tr></thead><tbody>${Object.entries(group(rows,'motivo')).map(([m,rs])=>`<tr><td>${badge(m)}</td><td class="c">${fmtNum(rs.length,0)}</td><td class="c">${fmtNum(uniq(rs,'mat'),0)}</td><td class="r">${fmtNum(sum(rs,'stock'))}</td><td class="r">${fmtCLP(sum(rs))}</td></tr>`).join('')}</tbody></table></div></div></div></section>`}
+function renderQ(){let rows=filtered(S.stock.filter(r=>r.q),'q');return `<section class="section" id="sec-q">${filters('q','stock')}<div class="card"><div class="section-title">Calidad / Q con y sin comentario</div><div class="table-wrap"><table><thead><tr><th>Q</th><th>Material</th><th class="desc">Descripción</th><th>Lote</th><th class="prov">Proveedor</th><th>Creación</th><th>Vencimiento</th><th>Días</th><th>Stock</th><th>Comentario/Motivo</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${badge(r.comentario?'Q con comentario':'Q sin comentario')}</td><td class="c">${esc(r.mat)}</td><td class="desc">${esc(r.desc)}</td><td class="c">${esc(r.lote)}</td><td class="prov">${esc(r.proveedor)}</td><td class="c">${fd(r.fechaCrea)}</td><td class="c">${fd(r.fechaCad)}</td><td class="r">${fmtNum(r.dias,0)}</td><td class="r">${fmtNum(r.stock)}</td><td>${esc(r.comentario||'—')}</td></tr>`).join('')}</tbody></table></div></div></section>`}
+
+
+function evalQuarter(){let d=new Date(),q=Math.floor(d.getMonth()/3)+1;return d.getFullYear()+'-T'+q}
+function evalKey(item){return [item.mat,item.proveedor].map(x=>String(x||'').trim()).join('|')}
+function evalCategory(desc){let t=lower(desc);if(t.includes('queso')||t.includes('mozz')||t.includes('cheddar')||t.includes('emmental'))return 'Lácteos';if(t.includes('jamon')||t.includes('chorizo')||t.includes('pepperoni')||t.includes('carne'))return 'Cárnicos';if(t.includes('harina')||t.includes('semolina')||t.includes('mejorador')||t.includes('levadura'))return 'Secos / masas';if(t.includes('film')||t.includes('estuche')||t.includes('bolsa')||t.includes('caja'))return 'Material empaque';if(t.includes('salsa')||t.includes('pulpa')||t.includes('tomate'))return 'Salsas / vegetales';return 'Otros'}
+function loadSkuEvals(){try{return JSON.parse(localStorage.getItem('mvEvaluacionMaterialesV1')||'{}')}catch(e){return {}}}
+function saveSkuEvals(map){try{localStorage.setItem('mvEvaluacionMaterialesV1',JSON.stringify(map||{}))}catch(e){}}
+function getSkuEval(item){let m=(window.loadMaterialEvals?window.loadMaterialEvals():loadSkuEvals());return m[evalKey(item)]||{}}
+function evalStatus(avg){avg=Number(avg)||0;if(avg>=4)return 'Aprobado';if(avg>=3)return 'Observado';return avg>0?'Crítico':'Pendiente'}
+function evalStatusClass(st){return st==='Aprobado'?'ok':(st==='Observado'||st==='Pendiente'?'obs':'crit')}
+function buildSkuMaster(){let map={};[...(S.stock||[]),...(S.loss||[])].forEach(r=>{if(!r||!r.mat)return;let k=[r.mat,r.proveedor||'—'].join('|');if(!map[k])map[k]={mat:r.mat,desc:r.desc||'—',proveedor:r.proveedor||'—',categoria:evalCategory(r.desc||''),lotes:0,kg:0,valor:0,loss:0};map[k].lotes+=1;map[k].kg+=num(r.stock);map[k].valor+=num(r.valor);if((S.loss||[]).includes(r))map[k].loss+=num(r.valor)});return Object.values(map).sort((a,b)=>a.mat.localeCompare(b.mat)||a.proveedor.localeCompare(b.proveedor))}
+function renderEvaluacion(){
+  let all=buildSkuMaster();let evals=(window.loadMaterialEvals?window.loadMaterialEvals():loadSkuEvals());let f=S.filters.evaluacion||{};
+  let rows=all.map(item=>{let ev=evals[evalKey(item)]||{};let scores=['funcional','calidad','tecnico'].map(k=>Number(ev[k])||0).filter(x=>x>0);let avg=scores.length?scores.reduce((a,b)=>a+b,0)/scores.length:0;let st=ev.estado||evalStatus(avg);return {...item,ev,avg,estado:st,ft:ev.ft||'',fechaRev:ev.fechaRev||'',trimestre:ev.trimestre||evalQuarter(),comentario:ev.comentario||''}});
+  let q=lower(f.search);if(q)rows=rows.filter(r=>[r.mat,r.desc,r.proveedor,r.categoria,r.ft,r.estado,r.comentario].some(x=>lower(x).includes(q)));
+  if(f.prov&&f.prov!=='Todos')rows=rows.filter(r=>r.proveedor===f.prov);if(f.cat&&f.cat!=='Todos')rows=rows.filter(r=>r.categoria===f.cat);if(f.estado&&f.estado!=='Todos')rows=rows.filter(r=>r.estado===f.estado);if(f.ft&&f.ft!=='Todos')rows=rows.filter(r=>f.ft==='Con FT'?!!r.ft:!r.ft);
+  let completos=rows.filter(r=>r.ft&&r.avg>0).length, crit=rows.filter(r=>r.estado==='Crítico').length, sinft=rows.filter(r=>!r.ft).length;
+  return `<section class="section" id="sec-evaluacion"><div class="eval-intro"><div class="eval-info"><b>🧪 Evaluación trimestral de materiales y proveedores</b><span>Listado maestro de SKU utilizados, proveedor y código FT. Permite evaluar cada 3 meses desempeño funcional, calidad/inocuidad y cumplimiento técnico/especificaciones. La información queda guardada en este navegador y, si Firebase está disponible, se sincroniza para todos.</span></div><div class="eval-kpis"><div class="eval-kpi"><b>${fmtNum(rows.length,0)}</b><span>SKU / proveedor visibles</span></div><div class="eval-kpi warn"><b>${fmtNum(sinft,0)}</b><span>Sin código FT</span></div><div class="eval-kpi danger"><b>${fmtNum(crit,0)}</b><span>Críticos</span></div></div></div><div class="card"><div class="section-title">Maestro SKU + evaluación técnica trimestral</div><div class="eval-filters"><div class="field"><label>Buscar</label><input data-s="evaluacion" data-f="search" value="${esc(f.search||'')}" placeholder="SKU, proveedor, FT, comentario..."></div><div class="field"><label>Proveedor</label><select data-s="evaluacion" data-f="prov"><option>Todos</option>${options(all.map(r=>r.proveedor),f.prov)}</select></div><div class="field"><label>Categoría</label><select data-s="evaluacion" data-f="cat"><option>Todos</option>${options(all.map(r=>r.categoria),f.cat)}</select></div><div class="field"><label>Estado</label><select data-s="evaluacion" data-f="estado"><option>Todos</option>${options(['Aprobado','Observado','Crítico','Pendiente'],f.estado)}</select></div><div class="field"><label>FT</label><select data-s="evaluacion" data-f="ft"><option>Todos</option><option ${f.ft==='Con FT'?'selected':''}>Con FT</option><option ${f.ft==='Sin FT'?'selected':''}>Sin FT</option></select></div></div><div class="table-wrap"><table class="eval-table"><thead><tr><th>Material</th><th class="desc">Descripción</th><th class="prov">Proveedor</th><th>Categoría</th><th>Código FT</th><th>Trimestre</th><th>Funcional<br>proceso/producto</th><th>Calidad e<br>inocuidad</th><th>Cumplimiento<br>técnico</th><th>Promedio</th><th>Estado</th><th>Última<br>revisión</th><th>Comentario / acción</th><th>Guardar</th></tr></thead><tbody>${rows.map(r=>{let k=evalKey(r),ev=r.ev||{};return `<tr data-eval-row="${esc(k)}"><td class="c"><b>${esc(r.mat)}</b></td><td class="desc">${esc(r.desc)}</td><td class="prov">${esc(r.proveedor)}</td><td>${esc(r.categoria)}</td><td><input class="eval-ft eval-input" data-eval-k="${esc(k)}" data-field="ft" value="${esc(r.ft)}" placeholder="FT-000"></td><td><input class="eval-ft eval-input" data-eval-k="${esc(k)}" data-field="trimestre" value="${esc(r.trimestre)}"></td><td class="c"><input class="eval-score eval-input" data-eval-k="${esc(k)}" data-field="funcional" type="number" min="1" max="5" value="${esc(ev.funcional||'')}" placeholder="1-5"></td><td class="c"><input class="eval-score eval-input" data-eval-k="${esc(k)}" data-field="calidad" type="number" min="1" max="5" value="${esc(ev.calidad||'')}" placeholder="1-5"></td><td class="c"><input class="eval-score eval-input" data-eval-k="${esc(k)}" data-field="tecnico" type="number" min="1" max="5" value="${esc(ev.tecnico||'')}" placeholder="1-5"></td><td class="c"><b>${r.avg?fmtNum(r.avg,1):'—'}</b></td><td class="c"><span class="eval-status ${evalStatusClass(r.estado)}">${esc(r.estado)}</span></td><td><input class="eval-ft eval-input" data-eval-k="${esc(k)}" data-field="fechaRev" type="date" value="${esc(r.fechaRev)}"></td><td><input class="eval-comment eval-input" data-eval-k="${esc(k)}" data-field="comentario" value="${esc(r.comentario)}" placeholder="Reclamos, defectos, mejora, responsable..."></td><td class="c"><button class="eval-save" data-eval-k="${esc(k)}">Guardar</button><span class="eval-saved" data-eval-status="${esc(k)}">${r.ft||r.avg?'Guardado':'Pendiente'}</span></td></tr>`}).join('')}</tbody></table></div><div class="eval-export"><small>${fmtNum(completos,0)} evaluaciones completas de ${fmtNum(rows.length,0)} visibles · Escala 1 bajo / 5 excelente.</small><button class="eval-btn-gray" id="evalExportBtn">Exportar evaluación CSV</button></div></div></section>`
+}
+
+function renderSection(id){
+  if(id==='resumen') return renderResumen();
+  if(id==='perdidas') return renderPerdidas();
+  if(id==='detalle') return renderDetalle();
+  if(id==='stock') return renderStock();
+  if(id==='motivos') return renderMotivos();
+  if(id==='proveedores') return renderGroup('proveedores','Pérdidas por proveedor',r=>r.proveedor);
+  if(id==='productos') return renderGroup('productos','Pérdidas por producto',r=>`${r.mat} · ${r.desc}`);
+  if(id==='q') return renderQ();
+  if(id==='evaluacion') return renderEvaluacion();
+  return renderResumen();
+}
+
+function renderAll(){
+  if(!S.stock.length&&!S.loss.length){
+    $('sectionsHost').innerHTML='<div class="card card-pad"><b>Carga los 3 archivos y presiona Aplicar.</b></div>';
+    document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.id===S.active));
+    return;
+  }
+  let active=S.active||'resumen';
+
+  // Clave de rendimiento: renderiza SOLO el apartado visible, no todos los apartados.
+  $('sectionsHost').innerHTML=renderSection(active);
+
+  document.querySelectorAll('.section').forEach(x=>x.classList.add('active'));
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.id===active));
+  bindFilters();
+}
+
+function setActive(id){
+  S.active=id;
+  renderAll();
+}
+
+
+function bindFilters(){
+  let searchTimers = {};
+  document.querySelectorAll('[data-s]').forEach(el=>{
+    if(el.__boundFast) return;
+    el.__boundFast = true;
+
+    const handler = ()=>{
+      const sc = el.dataset.s;
+      const f = el.dataset.f;
+      S.filters[sc] = S.filters[sc] || {};
+      S.filters[sc][f] = el.value;
+
+      if(f === 'search'){
+        clearTimeout(searchTimers[sc]);
+        searchTimers[sc] = setTimeout(()=>renderAll(), 280);
+      }else{
+        renderAll();
+      }
+    };
+
+    if(el.dataset.f === 'search'){
+      el.addEventListener('input', handler);
+    }else{
+      el.addEventListener('change', handler);
+    }
+  });
+}
+
+
+async function applyFiles(){
+  try{
+    let sf=$('stockFile').files[0],pf=$('priceFile').files[0],ifile=$('ingresoFile').files[0];
+    if(!sf||!pf||!ifile){alert('Debes cargar los 3 archivos: Stock SAP, Precios proveedor y MB51 Fecha ingreso.');return}
+    $('status').textContent='Procesando archivos...';
+    let swb=await readWB(sf),pwb=await readWB(pf),iwb=await readWB(ifile);
+    let stockData=aoa(swb), priceData=aoa(pwb), ingresoData=aoa(iwb);
+    if(!stockData.length) throw new Error('El archivo Stock SAP no tiene filas visibles.');
+    if(!priceData.length) throw new Error('El archivo de precios no tiene filas visibles.');
+    if(!ingresoData.length) throw new Error('El archivo MB51 no tiene filas visibles.');
+    process(stockData,priceData,ingresoData);
+    $('status').textContent=`Cargado: ${S.stock.length} registros SAP · ${S.loss.length} con motivo · ${Object.keys(S.ingresoMap||{}).length} fechas MB51`;
+    renderAll();
+  }catch(e){
+    console.error(e);
+    const msg=(e&&e.message)?e.message:String(e||'Error desconocido');
+    alert('Error procesando archivos: '+msg);
+    $('status').textContent='Error al procesar';
+  }
+}
+function exportCSV(){let rows=filtered(S.loss,'detalle');let f=S.filters.detalle||{};rows=rows.filter(r=>{let c=getGestionComment(r).trim(); if(f.comentarioGestion==='Con comentario')return !!c; if(f.comentarioGestion==='Sin comentario')return !c; return true});let headers=['Mes Vencimiento','Motivo','Material','Descripcion','Proveedor','Lote','Fecha Fabricacion','Fecha Recepcion','Fecha Vencimiento','Dias Duracion','Cantidad KG','Unidad','Precio Unit CLP','Fecha Ult Precio','Valor Perdido CLP','Comentario Gestion'];let csv=[headers.join(';')].concat(rows.map(r=>[r.mes,r.motivo,r.mat,r.desc,r.proveedor,r.lote,fd(r.fechaCrea),fd(r.fechaIngreso),fd(r.fechaCad),r.diasDuracion,r.stock,r.unidad,r.precio,fd(r.pfecha),Math.round(r.valor),getGestionComment(r)].map(x=>'"'+String(x??'').replaceAll('"','""')+'"').join(';'))).join('\n');let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));a.download='detalle_perdidas_sap_comentarios.csv';a.click()}
+
+const AUTH_USERS=['ctroncoso@minutoverde.cl','abarrera@minutoverde.cl','rgubelin@minutoverde.cl','gconcha@minutoverde.cl'];
+const AUTH_PASSWORD='programacion2026';
+function initLogin(){
+  if(localStorage.getItem('mvAuthOk')==='1')document.body.classList.add('auth-ok');
+  let form=$('loginForm');
+  if(form){form.onsubmit=e=>{e.preventDefault();let email=lower($('loginEmail').value);let pass=norm($('loginPassword').value);if(AUTH_USERS.includes(email)&&pass===AUTH_PASSWORD){localStorage.setItem('mvAuthOk','1');document.body.classList.add('auth-ok');$('loginError').style.display='none'}else{$('loginError').style.display='block'}}}
+  let out=$('logoutBtn');
+  if(out){out.onclick=()=>{localStorage.removeItem('mvAuthOk');document.body.classList.remove('auth-ok')}}
+}
+
+document.addEventListener('input',e=>{
+  if(e.target&&e.target.classList&&e.target.classList.contains('comment-box')){
+    const td=e.target.closest('td');
+    const st=td?td.querySelector('.comment-saved'):null;
+    if(st){st.textContent='● Cambios pendientes';st.classList.remove('ok');st.classList.add('warn');}
+  }
+});
+document.addEventListener('click',e=>{
+  if(e.target&&e.target.classList&&e.target.classList.contains('comment-apply')){
+    const td=e.target.closest('td');
+    const ta=td?td.querySelector('.comment-box'):null;
+    if(!ta)return;
+    setGestionComment(e.target.dataset.commentKey,ta.value);
+    const st=td.querySelector('.comment-saved');
+    if(st){st.textContent=ta.value.trim()?'💾 Guardado':'Comentario eliminado';st.classList.remove('warn');st.classList.add('ok');}
+  }
+});
+function init(){initLogin();document.getElementById('nav').innerHTML=SECTIONS.map(([id,t])=>`<button data-id="${id}">${t}</button>`).join('');document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>setActive(b.dataset.id));$('applyBtn').onclick=applyFiles;if($('autoLoadBtn'))$('autoLoadBtn').onclick=autoLoadGithubFiles;$('resetBtn').onclick=()=>{S.filters={};renderAll()};$('exportBtn').onclick=exportCSV;renderAll();setActive('resumen');setTimeout(()=>{ if(location.protocol!=='file:') autoLoadGithubFiles(); }, 700)}
+init();
+
+;
+
+(function(){
+  var AUTH_EMAILS = [
+    'ctroncoso@minutoverde.cl',
+    'catroncosoj@gmail.com',
+    'abarrera@minutoverde.cl',
+    'rgubelin@minutoverde.cl',
+    'gconcha@minutoverde.cl'
+  ];
+  var AUTH_PASSWORD = 'programacion2026';
+
+  function setAuthOk(){
+    try{
+      localStorage.setItem('mvAuthOk','1');
+      localStorage.setItem('mvAuth','true');
+    }catch(e){}
+    document.body.classList.add('auth-ok');
+  }
+
+  function logout(){
+    try{
+      localStorage.removeItem('mvAuthOk');
+      localStorage.removeItem('mvAuth');
+      sessionStorage.removeItem('mvAuthOk');
+      sessionStorage.removeItem('mvAuth');
+    }catch(e){}
+    document.body.classList.remove('auth-ok');
+    location.reload();
+  }
+
+  function initMVLogin(){
+    try{
+      if(localStorage.getItem('mvAuthOk') === '1' || localStorage.getItem('mvAuth') === 'true'){
+        document.body.classList.add('auth-ok');
+      }
+    }catch(e){}
+
+    var form = document.getElementById('loginFormMV');
+    var err = document.getElementById('loginErrorMV');
+    if(form){
+      form.onsubmit = function(ev){
+        ev.preventDefault();
+        var email = (document.getElementById('loginEmailMV') || {}).value || '';
+        var pass = (document.getElementById('loginPasswordMV') || {}).value || '';
+        email = email.trim().toLowerCase();
+        pass = pass.trim();
+
+        if(AUTH_EMAILS.indexOf(email) >= 0 && pass === AUTH_PASSWORD){
+          if(err) err.style.display = 'none';
+          setAuthOk();
+        }else{
+          if(err) err.style.display = 'block';
+        }
+        return false;
+      };
+    }
+
+    var logoutBtn = document.getElementById('logoutBtnFixed');
+    if(logoutBtn){
+      logoutBtn.onclick = function(ev){
+        ev.preventDefault();
+        logout();
+        return false;
+      };
+    }
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', initMVLogin);
+  }else{
+    initMVLogin();
+  }
+  setTimeout(initMVLogin, 300);
+})();
+
+;
+
+/* === OPTIMIZACIÓN BUSCADORES / FILTROS === */
+(function(){
+  function debounce(fn, wait){
+    var t;
+    return function(){
+      var ctx=this, args=arguments;
+      clearTimeout(t);
+      t=setTimeout(function(){ fn.apply(ctx,args); }, wait);
+    };
+  }
+
+  function initSearchOptimization(){
+    var selectors = [
+      'input[type="search"]',
+      'input[id*="search" i]',
+      'input[id*="buscar" i]',
+      'input[placeholder*="buscar" i]',
+      'input[placeholder*="producto" i]',
+      'input[placeholder*="proveedor" i]',
+      'input[placeholder*="lote" i]',
+      'input[placeholder*="material" i]'
+    ].join(",");
+
+    document.querySelectorAll(selectors).forEach(function(el){
+      if(el.__mvOptimized) return;
+      el.__mvOptimized = true;
+
+      var oldOnInput = el.oninput;
+      if(typeof oldOnInput === "function"){
+        el.oninput = debounce(function(ev){
+          oldOnInput.call(el, ev);
+        }, 120);
+      }
+    });
+  }
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", initSearchOptimization);
+  }else{
+    initSearchOptimization();
+  }
+  setTimeout(initSearchOptimization, 500);
+  setTimeout(initSearchOptimization, 1500);
+})();
+
+;
+
+/* === FILTRO POR FECHA GLOBAL SOBRE LOS DATOS CARGADOS === */
+(function(){
+  function parseAnyDate(v){
+    if(v == null || v === "") return null;
+    if(v instanceof Date && !isNaN(v)) return v;
+    if(typeof v === "number"){
+      var d = new Date(Math.round((v - 25569) * 86400000));
+      return isNaN(d) ? null : d;
+    }
+    var s = String(v).trim();
+    if(!s) return null;
+
+    // dd/mm/yyyy o dd-mm-yyyy
+    var m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+    if(m){
+      var yy = Number(m[3]);
+      if(yy < 100) yy += 2000;
+      var d1 = new Date(yy, Number(m[2])-1, Number(m[1]));
+      return isNaN(d1) ? null : d1;
+    }
+
+    var d2 = new Date(s);
+    return isNaN(d2) ? null : d2;
+  }
+
+  function toDay(d){
+    if(!d) return null;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  }
+
+  function rowDate(row, mode){
+    var keys;
+    if(mode === "mov") keys = ["Fecha Movimiento","Fecha movimiento","Fecha Registro","Mes Registro SAP"];
+    else if(mode === "venc") keys = ["FeCaduc/FePreferCons","Fecha Vencimiento","Fecha vencimiento","Vencimiento"];
+    else if(mode === "precio") keys = ["Fecha Últ. Precio","Fecha Ult. Precio","Fecha documento","Fecha Último Precio"];
+    else keys = ["Fecha Movimiento","Fecha movimiento","Fecha Registro","Mes Registro SAP","FeCaduc/FePreferCons","Fecha Vencimiento","Fecha vencimiento"];
+
+    for(var i=0;i<keys.length;i++){
+      if(Object.prototype.hasOwnProperty.call(row, keys[i])){
+        var d = parseAnyDate(row[keys[i]]);
+        if(d) return d;
+      }
+    }
+    return null;
+  }
+
+  function dateFilterActive(){
+    var from = document.getElementById("mvDateFrom")?.value;
+    var to = document.getElementById("mvDateTo")?.value;
+    return !!(from || to);
+  }
+
+  function applyDateFilterToRows(rows){
+    if(!Array.isArray(rows) || !dateFilterActive()) return rows;
+    var mode = document.getElementById("mvDateField")?.value || "auto";
+    var fromVal = document.getElementById("mvDateFrom")?.value;
+    var toVal = document.getElementById("mvDateTo")?.value;
+    var from = fromVal ? toDay(parseAnyDate(fromVal)) : null;
+    var to = toVal ? toDay(parseAnyDate(toVal)) : null;
+
+    var filtered = rows.filter(function(r){
+      var d = rowDate(r, mode);
+      if(!d) return false;
+      var t = toDay(d);
+      if(from != null && t < from) return false;
+      if(to != null && t > to) return false;
+      return true;
+    });
+
+    var st = document.getElementById("mvDateStatus");
+    if(st) st.textContent = "Filtro fecha aplicado: " + filtered.length.toLocaleString("es-CL") + " registros.";
+    return filtered;
+  }
+
+  function installXlsxPatch(){
+    if(!window.XLSX || !XLSX.utils || !XLSX.utils.sheet_to_json || XLSX.utils.sheet_to_json.__mvDatePatched) return;
+    var original = XLSX.utils.sheet_to_json;
+    XLSX.utils.sheet_to_json = function(){
+      var rows = original.apply(this, arguments);
+      // Solo filtra arrays de objetos, no header:1 ni tablas auxiliares.
+      if(Array.isArray(rows) && rows.length && rows[0] && typeof rows[0] === "object" && !Array.isArray(rows[0])){
+        return applyDateFilterToRows(rows);
+      }
+      return rows;
+    };
+    XLSX.utils.sheet_to_json.__mvDatePatched = true;
+  }
+
+  function bindDateButtons(){
+    var apply = document.getElementById("mvApplyDateFilter");
+    var clear = document.getElementById("mvClearDateFilter");
+    if(apply && !apply.__mvBound){
+      apply.__mvBound = true;
+      apply.onclick = function(){
+        var st = document.getElementById("mvDateStatus");
+        if(st) st.textContent = "Filtro fecha listo. Vuelve a presionar Aplicar archivo para recalcular.";
+      };
+    }
+    if(clear && !clear.__mvBound){
+      clear.__mvBound = true;
+      clear.onclick = function(){
+        var f = document.getElementById("mvDateFrom");
+        var t = document.getElementById("mvDateTo");
+        if(f) f.value = "";
+        if(t) t.value = "";
+        var st = document.getElementById("mvDateStatus");
+        if(st) st.textContent = "Sin filtro de fecha aplicado.";
+      };
+    }
+  }
+
+  function init(){
+    installXlsxPatch();
+    bindDateButtons();
+  }
+
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+  setTimeout(init, 300);
+  setTimeout(init, 1000);
+})();
+
+;
+
+/* === V15 PORTADA EJECUTIVA, GRÁFICO COMBINADO Y TABLAS SIN ÚLTIMO PRECIO === */
+(function(){
+  function parseDate(v){
+    if(v==null || v==="") return null;
+    if(v instanceof Date && !isNaN(v)) return v;
+    if(typeof v==="number"){
+      var d=new Date(Math.round((v-25569)*86400000));
+      return isNaN(d)?null:d;
+    }
+    var s=String(v).trim();
+    if(!s || s==="—") return null;
+    var m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+    if(m){var y=+m[3]; if(y<100)y+=2000; var d1=new Date(y,+m[2]-1,+m[1]); return isNaN(d1)?null:d1;}
+    var d2=new Date(s); return isNaN(d2)?null:d2;
+  }
+  function day(d){d=parseDate(d);return d?new Date(d.getFullYear(),d.getMonth(),d.getDate()):null}
+  function diffDays(a,b){a=day(a);b=day(b);return a&&b?Math.round((b-a)/86400000):null}
+  function months(d){return d==null?null:+(d/30.4375).toFixed(1)}
+  function ym(d){d=parseDate(d);return d?d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"):"Sin fecha"}
+  function fmtMoney(n){return "$ "+Math.round(Number(n||0)).toLocaleString("es-CL")}
+  function fmtShort(n){n=Number(n||0);return "$"+(n>=1e6?(n/1e6).toFixed(1)+"MM":n>=1e3?(n/1e3).toFixed(0)+"K":Math.round(n).toLocaleString("es-CL"))}
+  function fmtKg(n){return Number(n||0).toLocaleString("es-CL",{maximumFractionDigits:1})+" KG"}
+  function fmtDate(d){d=parseDate(d);return d?d.toLocaleDateString("es-CL"):"—"}
+  function num(v){if(typeof v==="number")return v;let n=parseFloat(String(v??"").replace(/\$/g,"").replace(/\./g,"").replace(",","."));return isNaN(n)?0:n}
+  function first(r,keys){for(let k of keys){if(r&&r[k]!=null&&r[k]!=="")return r[k]}return null}
+  function clean(s){return String(s??"—").trim()}
+  function enrich(r){
+    if(!r||typeof r!=="object")return r;
+    r.mat=clean(r.mat||r.Material);
+    r.desc=clean(r.desc||r["Descrip. Material"]||r["Descripción"]||r["Descripcion"]);
+    r.proveedor=clean(r.proveedor||r["Nombre Proveedor"]||r.Proveedor);
+    r.lote=clean(r.lote||r.Lote);
+    r.fechaVenc=parseDate(r.fechaVenc||first(r,["FeCaduc/FePreferCons","Fecha Vencimiento","Fecha vencimiento","Vencimiento"]));
+    r.fechaIngreso=parseDate(r.fechaIngreso||first(r,["Fe.contabilización","Fe.contabilizacion","Fecha contabilización","Fecha contabilizacion"]));
+    r.fechaCreacionLote=parseDate(first(r,["Fe.fabricación","Fecha Fabricación","Fecha fabricacion","Fecha Fabricacion"])||r.fechaCreacionLote);
+    r.fechaMov=parseDate(r.fechaMov||first(r,["Fecha Movimiento","Fecha movimiento","Fecha Registro"]));
+    r.cantKG=num(r.cantKG||r["Stock total"]||r["Cantidad (KG)"]||r.Peso);
+    r.diasDuracion=num(r.diasDuracion||first(r,["Días Duración","Dias Duración","Días Duracion","Dias Duracion"]));
+    r.valor=num(r.valor||r["Valor Perdido (CLP)"]);
+    r.precio=num(r.precio||r["Precio Unit. (CLP)"]||r["Precio Unitario"]||r["Precio neto"]);
+    if(!r.valor && r.precio && r.cantKG) r.valor=r.precio*r.cantKG;
+    let dTotal=diffDays(r.fechaCreacionLote,r.fechaVenc);
+    let dIng=diffDays(r.fechaIngreso,r.fechaVenc);
+    r.vidaTotalDias=dTotal; r.vidaIngresoDias=dIng;
+    r.vidaTotalMeses=months(dTotal); r.vidaIngresoMeses=months(dIng);
+    r.consumidaAntesPct=(dTotal&&dIng!=null&&dTotal>0)?Math.max(0,Math.min(100,(1-(dIng/dTotal))*100)):null;
+    r.mesVenc=ym(r.fechaVenc); r.mesKey=r.mesVenc;
+    r.diasAVencer=diffDays(new Date(),r.fechaVenc);
+    return r;
+  }
+  function lossRows(){let a=[];try{if(window.S&&Array.isArray(S.loss))a=S.loss}catch(e){};a.forEach(enrich);return a}
+  function stockRows(){let a=[];try{if(window.S&&Array.isArray(S.stock))a=S.stock}catch(e){};a.forEach(enrich);return a}
+  function group(arr,key){
+    let m={}; arr.forEach(r=>{let k=key(r)||"—"; if(!m[k])m[k]={key:k,valor:0,kg:0,lotes:0,items:[]}; m[k].valor+=num(r.valor);m[k].kg+=num(r.cantKG);m[k].lotes++;m[k].items.push(r)});
+    return Object.values(m);
+  }
+  function avg(arr,prop){let v=arr.map(r=>r[prop]).filter(x=>x!=null&&isFinite(x)); return v.length?v.reduce((a,b)=>a+b,0)/v.length:null}
+  function chipByDays(d){
+    if(d==null)return '<span class="mv15-chip mv15-blue">Sin dato</span>';
+    if(d<30)return '<span class="mv15-chip mv15-red">&lt;30 días</span>';
+    if(d<60)return '<span class="mv15-chip mv15-orange">30-60 días</span>';
+    if(d<90)return '<span class="mv15-chip mv15-yellow">60-90 días</span>';
+    return '<span class="mv15-chip mv15-green">&gt;90 días</span>';
+  }
+  function miniBars(data,label,value,fmt,maxRows){
+    data=data.slice(0,maxRows||10); let mx=Math.max(1,...data.map(value));
+    return '<div class="mv15-bars">'+data.map(d=>{let v=value(d),p=Math.max(2,Math.round(v/mx*100)); return '<div class="mv15-row"><div class="mv15-name" title="'+label(d)+'">'+label(d)+'</div><div class="mv15-track"><div class="mv15-fill" style="width:'+p+'%"></div></div><div class="mv15-val">'+fmt(v)+'</div></div>'}).join('')+'</div>';
+  }
+  function comboChart(data){
+    if(!data.length)return '<div class="mv15-note">Sin datos.</div>';
+    data=data.slice(-12);
+    let W=900,H=320,pL=58,pR=46,pT=34,pB=44;
+    let maxVal=Math.max(1,...data.map(d=>d.valor)), maxKg=Math.max(1,...data.map(d=>d.kg));
+    let innerW=W-pL-pR, innerH=H-pT-pB, gap=10, bw=Math.max(16,(innerW/data.length)-gap);
+    function x(i){return pL+i*(innerW/data.length)+gap/2}
+    function yVal(v){return pT+innerH-(v/maxVal)*innerH}
+    function yKg(v){return pT+innerH-(v/maxKg)*innerH}
+    let pts=data.map((d,i)=>[x(i)+bw/2,yVal(d.valor),d]);
+    let path=pts.map((pt,i)=>(i?'L':'M')+pt[0].toFixed(1)+' '+pt[1].toFixed(1)).join(' ');
+    let bars=data.map((d,i)=>{let h=(d.kg/maxKg)*innerH; return '<rect x="'+x(i).toFixed(1)+'" y="'+(pT+innerH-h).toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h.toFixed(1)+'" rx="8" fill="#00b140" opacity=".72"><title>'+d.key+' · '+fmtKg(d.kg)+' · '+fmtMoney(d.valor)+'</title></rect>'}).join('');
+    let labels=data.map((d,i)=>'<text x="'+(x(i)+bw/2).toFixed(1)+'" y="'+(H-14)+'" text-anchor="middle" font-size="11" fill="#475569">'+d.key.slice(5)+'</text>').join('');
+    let circles=pts.map(pt=>'<circle cx="'+pt[0]+'" cy="'+pt[1]+'" r="6" fill="#004529"><title>'+pt[2].key+' · '+fmtMoney(pt[2].valor)+' · '+fmtKg(pt[2].kg)+'</title></circle>').join('');
+    let grid=[0,.25,.5,.75,1].map(t=>'<line x1="'+pL+'" y1="'+(pT+innerH*(1-t))+'" x2="'+(W-pR)+'" y2="'+(pT+innerH*(1-t))+'" stroke="#e2e8f0"/>').join('');
+    return '<div class="mv15-legend"><span><i class="mv15-dot kg"></i>KG perdidos</span><span><i class="mv15-dot val"></i>Valor perdido CLP</span></div><svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto">'+grid+'<line x1="'+pL+'" y1="'+(pT+innerH)+'" x2="'+(W-pR)+'" y2="'+(pT+innerH)+'" stroke="#cbd5e1"/><line x1="'+pL+'" y1="'+pT+'" x2="'+pL+'" y2="'+(pT+innerH)+'" stroke="#cbd5e1"/>'+bars+'<path d="'+path+'" fill="none" stroke="#004529" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'+circles+labels+'<text x="'+pL+'" y="20" font-size="13" fill="#334155" font-weight="850">Últimos 12 meses por fecha de vencimiento</text><text x="'+(W-pR)+'" y="20" text-anchor="end" font-size="12" fill="#64748b">Barras: KG · Línea: CLP</text></svg>';
+  }
+  function filterRange(arr){
+    let f=document.getElementById("mv15From")?.value, t=document.getElementById("mv15To")?.value;
+    return arr.filter(r=>{let v=day(r.fechaVenc); if(!v)return false; if(f&&v<day(f))return false; if(t&&v>day(t))return false; return true});
+  }
+  function tableRows(arr){
+    return arr.map(r=>'<tr><td>'+r.mat+'</td><td>'+r.desc+'</td><td>'+r.proveedor+'</td><td>'+r.lote+'</td><td>'+fmtDate(r.fechaCreacionLote)+'</td><td>'+fmtDate(r.fechaIngreso)+'</td><td>'+fmtDate(r.fechaVenc)+'</td><td><b>'+(r.diasDuracion||'—')+' días</b></td><td>'+fmtKg(r.cantKG)+'</td><td><b>'+fmtMoney(r.valor)+'</b></td></tr>').join('');
+  }
+  function renderExec(){
+    let all=lossRows(); if(!all.length)return "";
+    let now=new Date(), y=now.getFullYear(), m=now.getMonth();
+    let ytd=all.filter(r=>r.fechaVenc&&r.fechaVenc.getFullYear()===y);
+    let cur=all.filter(r=>r.fechaVenc&&r.fechaVenc.getFullYear()===y&&r.fechaVenc.getMonth()===m);
+    let next30=stockRows().filter(r=>r.fechaVenc&&r.diasAVencer!=null&&r.diasAVencer>=0&&r.diasAVencer<=30);
+    let riskVal=next30.reduce((s,r)=>s+(r.valor||r.precio*r.cantKG||0),0);
+    let avgDur=avg(all,"diasDuracion");
+    let byMonth=group(all,r=>r.mesVenc).sort((a,b)=>a.key.localeCompare(b.key));
+    let byProd=group(all,r=>r.mat+" · "+r.desc).sort((a,b)=>b.valor-a.valor);
+    let byProv=group(all,r=>r.proveedor).sort((a,b)=>b.valor-a.valor);
+    let pareto=0, acc=0, total=byProd.reduce((s,x)=>s+x.valor,0); for(let x of byProd){acc+=x.valor;pareto++; if(total&&acc/total>=.8)break}
+    return '<div class="mv15-shell" id="mv15Exec">'+
+      '<div class="mv15-kpis">'+
+        '<div class="mv15-kpi"><b>'+fmtMoney(ytd.reduce((s,r)=>s+r.valor,0))+'</b><span>Costo vencido YTD</span><small>Por fecha vencimiento '+y+'</small></div>'+
+        '<div class="mv15-kpi"><b>'+fmtMoney(cur.reduce((s,r)=>s+r.valor,0))+'</b><span>Costo mes actual</span><small>'+ym(now)+'</small></div>'+
+        '<div class="mv15-kpi"><b>'+fmtMoney(riskVal)+'</b><span>Riesgo próximos 30 días</span><small>'+next30.length+' lotes próximos a vencer</small></div>'+
+        '<div class="mv15-kpi"><b>'+(avgDur==null?'—':Math.round(avgDur)+' días')+'</b><span>Días duración prom.</span><small>Desde stock SAP</small></div>'+
+      '</div>'+
+      '<div class="mv15-grid2">'+
+        '<div class="mv15-card"><h3>📊 Tendencia ejecutiva</h3><p>Comparación mensual de valor perdido y KG vencidos. El mes se calcula con fecha de vencimiento, no con fecha de movimiento.</p>'+comboChart(byMonth)+'</div>'+
+        '<div class="mv15-card"><h3>⚠️ Riesgo 30 días</h3>'+miniBars(group(next30,r=>r.mat+" · "+r.desc).sort((a,b)=>b.valor-a.valor),d=>d.key,d=>d.valor,fmtShort,8)+'<div class="mv15-note">Estimación usando stock actual, fecha de vencimiento y precio disponible.</div></div>'+
+      '</div>'+
+      '<div class="mv15-grid3">'+
+        '<div class="mv15-card"><h3>🥇 Top productos</h3>'+miniBars(byProd,d=>d.key,d=>d.valor,fmtShort,10)+'<div class="mv15-note">Pareto: '+pareto+' productos explican aprox. 80% del valor perdido.</div></div>'+
+        '<div class="mv15-card"><h3>🏭 Top proveedores</h3>'+miniBars(byProv,d=>d.key,d=>d.valor,fmtShort,10)+'</div>'+
+        '<div class="mv15-card"><h3>📦 Días duración por proveedor</h3>'+miniBars(group(all,r=>r.proveedor).map(p=>{p.avg=avg(p.items,"diasDuracion");return p}).filter(p=>p.avg!=null).sort((a,b)=>b.avg-a.avg),d=>d.key,d=>d.avg,v=>Math.round(v)+" días",10)+'<div class="mv15-note">Campo tomado desde Días Duración del stock SAP. Fecha Recepción viene desde MB51 Fe.contabilización.</div></div>'+
+      '</div>'+
+    '</div>';
+  }
+  function renderRangePanel(){
+    let all=lossRows(); if(!all.length)return "";
+    let filtered=filterRange(all);
+    let totalVal=filtered.reduce((s,r)=>s+r.valor,0), totalKg=filtered.reduce((s,r)=>s+r.cantKG,0);
+    let avgR=avg(filtered,"diasDuracion");
+    return '<div class="mv15-card" id="mv15RangePanel"><h3>🔎 Costos y productos vencidos por rango</h3><div class="mv15-filter"><div class="field"><label>Vencidos desde</label><input type="date" id="mv15From" value="'+(document.getElementById("mv15From")?.value||"")+'"></div><div class="field"><label>Vencidos hasta</label><input type="date" id="mv15To" value="'+(document.getElementById("mv15To")?.value||"")+'"></div><button class="mv15-btn green" id="mv15Apply" type="button">Aplicar</button><button class="mv15-btn gray" id="mv15Clear" type="button">Limpiar</button></div><div class="mv15-kpis"><div class="mv15-card"><b>'+fmtMoney(totalVal)+'</b><span>Costo vencido rango</span></div><div class="mv15-card"><b>'+fmtKg(totalKg)+'</b><span>Kg vencidos rango</span></div><div class="mv15-card"><b>'+(avgR==null?'—':Math.round(avgR)+' días')+'</b><span>Días duración prom.</span><small>Desde stock SAP</small></div></div><div class="mv15-table" style="margin-top:12px"><table><thead><tr><th>Material</th><th>Descripción</th><th>Proveedor</th><th>Lote</th><th>Fecha Fabricación</th><th>Fecha Recepción</th><th>Fecha Vencimiento</th><th>Días duración</th><th>KG</th><th>Valor</th></tr></thead><tbody>'+(filtered.length?tableRows(filtered):'<tr><td colspan="10">Sin vencidos en el rango seleccionado.</td></tr>')+'</tbody></table></div></div>';
+  }
+  function inject(){
+    let sec=document.getElementById("sec-resumen")||document.querySelector(".section.active")||document.querySelector("main");
+    if(sec){
+      let old14=document.getElementById("mv14Exec"); if(old14) old14.remove();
+      if(!document.getElementById("mv15Exec")){
+        let div=document.createElement("div"); div.innerHTML=renderExec(); sec.insertBefore(div,sec.firstChild);
+      }
+    }
+    let per=document.getElementById("sec-perdidas")||sec;
+    if(per){
+      let old=document.getElementById("mv14RangePanel"); if(old) old.remove();
+      if(!document.getElementById("mv15RangePanel")){
+        let div=document.createElement("div"); div.innerHTML=renderRangePanel(); per.appendChild(div); setTimeout(bind,0);
+      }
+    }
+    cleanLastPriceColumns();
+  }
+  function bind(){
+    let a=document.getElementById("mv15Apply"), c=document.getElementById("mv15Clear");
+    if(a&&!a.__b){a.__b=true;a.onclick=rerenderRange}
+    if(c&&!c.__b){c.__b=true;c.onclick=()=>{let f=document.getElementById("mv15From"),t=document.getElementById("mv15To"); if(f)f.value=""; if(t)t.value=""; rerenderRange()}}
+  }
+  function rerenderRange(){let old=document.getElementById("mv15RangePanel"); if(old){old.outerHTML=renderRangePanel(); bind(); cleanLastPriceColumns();}}
+  function cleanLastPriceColumns(){
+    document.querySelectorAll("table").forEach(tbl=>{
+      if(tbl.__mv15Cleaned)return;
+      let ths=[...tbl.querySelectorAll("thead th")];
+      let idxs=ths.map((th,i)=>({txt:th.textContent.toLowerCase(),i})).filter(x=>x.txt.includes("último precio")||x.txt.includes("ultimo precio")||x.txt.trim()==="precio"||x.txt.includes("fecha últ")||x.txt.includes("fecha ult")||x.txt.includes("vida útil")||x.txt.includes("vida util")||x.txt.includes("% consumida")).map(x=>x.i).sort((a,b)=>b-a);
+      if(!idxs.length)return;
+      tbl.__mv15Cleaned=true;
+      tbl.querySelectorAll("tr").forEach(tr=>{
+        idxs.forEach(i=>{if(tr.children[i])tr.children[i].remove()})
+      });
+    });
+  }
+  let old=window.renderAll;
+  if(typeof old==="function"&&!old.__mv15){
+    window.renderAll=function(){let r=old.apply(this,arguments);setTimeout(inject,0);return r}; window.renderAll.__mv15=true;
+  }
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>setTimeout(inject,700)); else setTimeout(inject,700);
+  setTimeout(inject,1800);
+})();
+
+;
+
+(function(){
+  const KEY='mv32DashboardScale';
+  const allowed=['80','90','100','110','120'];
+  function applyScale(v){
+    v=String(v||localStorage.getItem(KEY)||'100');
+    if(!allowed.includes(v)) v='100';
+    allowed.forEach(x=>document.body.classList.remove('mv32-scale-'+x));
+    document.body.classList.add('mv32-scale-'+v);
+    try{localStorage.setItem(KEY,v)}catch(e){}
+    document.querySelectorAll('.mv32-size-btn').forEach(b=>b.classList.toggle('active',b.dataset.scale===v));
+  }
+  function panelHTML(){
+    const current=String(localStorage.getItem(KEY)||'100');
+    const opts=[['80','Compacta 80%'],['90','Compacta 90%'],['100','Normal 100%'],['110','Grande 110%'],['120','Presentación 120%']];
+    return `<div class="mv32-size-panel" id="mv32SizePanel">
+      <div class="mv32-size-title">🎛️ Tamaño visual <small>Regula el tamaño del dashboard y la tabla de lotes</small></div>
+      <div class="mv32-size-buttons">${opts.map(o=>`<button type="button" class="mv32-size-btn ${current===o[0]?'active':''}" data-scale="${o[0]}">${o[1]}</button>`).join('')}</div>
+    </div>`;
+  }
+  function injectPanel(){
+    const wrap=document.querySelector('.wrap');
+    if(!wrap) return;
+    if(!document.getElementById('mv32SizePanel')){
+      const box=document.createElement('div');
+      box.innerHTML=panelHTML();
+      wrap.insertBefore(box.firstElementChild, wrap.firstElementChild);
+    }
+    document.querySelectorAll('.mv32-size-btn').forEach(btn=>{
+      if(btn.__mv32) return; btn.__mv32=true;
+      btn.addEventListener('click',()=>applyScale(btn.dataset.scale));
+    });
+    applyScale(localStorage.getItem(KEY)||'100');
+  }
+  const oldRender=window.renderAll;
+  if(typeof oldRender==='function' && !oldRender.__mv32){
+    window.renderAll=function(){const r=oldRender.apply(this,arguments); setTimeout(injectPanel,0); return r};
+    window.renderAll.__mv32=true;
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>setTimeout(injectPanel,300)); else setTimeout(injectPanel,300);
+  setTimeout(injectPanel,1200);
+})();
+
+;
+
+(function(){
+  const KEY='mv33ViewConfig';
+  const defaults={view:'compact',comment:'medium',density:'compact',hidden:false};
+  function load(){try{return Object.assign({},defaults,JSON.parse(localStorage.getItem(KEY)||'{}'))}catch(e){return Object.assign({},defaults)}}
+  function save(c){try{localStorage.setItem(KEY,JSON.stringify(c))}catch(e){}}
+  function apply(c){document.body.classList.add('mv33-on');['compact','normal','large','presentation'].forEach(x=>document.body.classList.remove('mv33-view-'+x));['small','medium','large'].forEach(x=>document.body.classList.remove('mv33-comment-'+x));['compact','normal','wide'].forEach(x=>document.body.classList.remove('mv33-density-'+x));document.body.classList.add('mv33-view-'+c.view,'mv33-comment-'+c.comment,'mv33-density-'+c.density);const p=document.getElementById('mv33ViewPanel');if(p)p.classList.toggle('mv33-hidden',!!c.hidden)}
+  function panel(c){return `<div class="mv33-view-panel ${c.hidden?'mv33-hidden':''}" id="mv33ViewPanel"><div class="mv33-view-head"><div><b>🎛️ Ajustar vista</b><br><span>Tabla y comentarios</span></div><button class="mv33-view-min" id="mv33Toggle" title="Minimizar/mostrar">${c.hidden?'⚙':'−'}</button></div><div class="mv33-view-body"><div class="mv33-view-row"><label>Vista</label><select id="mv33View"><option value="compact">Compacta</option><option value="normal">Normal</option><option value="large">Grande</option><option value="presentation">Presentación</option></select></div><div class="mv33-view-row"><label>Comentario</label><select id="mv33Comment"><option value="small">Pequeño</option><option value="medium">Medio</option><option value="large">Grande</option></select></div><div class="mv33-view-row"><label>Fila</label><select id="mv33Density"><option value="compact">Compacta</option><option value="normal">Normal</option><option value="wide">Alta</option></select></div><div class="mv33-view-actions"><button class="mv33-pill green" id="mv33Apply">Aplicar vista</button><button class="mv33-pill gray" id="mv33Reset">Reset</button></div></div></div>`}
+  function inject(){let c=load();if(!document.getElementById('mv33ViewPanel'))document.body.insertAdjacentHTML('beforeend',panel(c));const v=document.getElementById('mv33View'),cm=document.getElementById('mv33Comment'),d=document.getElementById('mv33Density');if(v){v.value=c.view;cm.value=c.comment;d.value=c.density;}document.getElementById('mv33Apply')?.addEventListener('click',()=>{let n={view:v.value,comment:cm.value,density:d.value,hidden:false};save(n);apply(n)});document.getElementById('mv33Reset')?.addEventListener('click',()=>{let n=Object.assign({},defaults);save(n);document.getElementById('mv33ViewPanel')?.remove();inject();apply(n)});document.getElementById('mv33Toggle')?.addEventListener('click',()=>{let n=load();n.hidden=!n.hidden;save(n);document.getElementById('mv33ViewPanel')?.remove();inject();apply(n)});[v,cm,d].forEach(el=>el&&el.addEventListener('change',()=>{let n={view:v.value,comment:cm.value,density:d.value,hidden:false};save(n);apply(n)}));apply(c)}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(inject,300));else setTimeout(inject,300);setTimeout(inject,1200);
+})();
+
+;
+
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+import {
+  getFirestore,
+  collection,
+  getDocs,
+  doc,
+  setDoc,
+  deleteDoc,
+  serverTimestamp
+} from "https://www.gstatic.com/firebasejs/11.9.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCxifqfJD89epa8MVLjDesydh5pLiIoNTU",
+  authDomain: "dashboard-calidad-y-costos.firebaseapp.com",
+  projectId: "dashboard-calidad-y-costos",
+  storageBucket: "dashboard-calidad-y-costos.firebasestorage.app",
+  messagingSenderId: "256388106071",
+  appId: "1:256388106071:web:f8e6a05da4926d5015e012",
+  measurementId: "G-8KVX39G2LG"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const COMMENTS_COLLECTION = "comentarios";
+const LOCAL_KEY = "mvDetalleComentariosGestionV1";
+
+let firebaseComments = {};
+let firebaseReady = false;
+let firebaseError = null;
+
+function safeDocId(key){
+  try{
+    return btoa(unescape(encodeURIComponent(String(key || ""))))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/g, "");
+  }catch(e){
+    return String(key || "").replace(/[^\w.-]/g, "_").slice(0, 120);
+  }
+}
+
+function readLocalComments(){
+  try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || "{}"); }
+  catch(e){ return {}; }
+}
+
+function writeLocalComments(map){
+  try { localStorage.setItem(LOCAL_KEY, JSON.stringify(map || {})); }
+  catch(e){}
+}
+
+async function loadFirebaseComments(){
+  try{
+    const snap = await getDocs(collection(db, COMMENTS_COLLECTION));
+    const remote = {};
+    snap.forEach(d => {
+      const data = d.data() || {};
+      const key = data.key || d.id;
+      if (data.comentario && String(data.comentario).trim()) {
+        remote[key] = String(data.comentario).trim();
+      }
+    });
+    firebaseComments = Object.assign({}, readLocalComments(), remote);
+    writeLocalComments(firebaseComments);
+    firebaseReady = true;
+    firebaseError = null;
+    updateFirebaseStatus();
+    if (typeof window.renderAll === "function") {
+      setTimeout(() => window.renderAll(), 150);
+    }
+  }catch(err){
+    firebaseError = err;
+    firebaseReady = false;
+    updateFirebaseStatus();
+    console.error("Error cargando comentarios desde Firestore:", err);
+  }
+}
+
+async function saveFirebaseComment(key, value){
+  const clean = String(value || "").trim();
+  const local = readLocalComments();
+
+  if(clean) {
+    local[key] = clean;
+    firebaseComments[key] = clean;
+  } else {
+    delete local[key];
+    delete firebaseComments[key];
+  }
+  writeLocalComments(local);
+
+  try{
+    const ref = doc(db, COMMENTS_COLLECTION, safeDocId(key));
+    if(clean){
+      await setDoc(ref, {
+        key,
+        comentario: clean,
+        actualizadoEn: serverTimestamp(),
+        origen: "dashboard-calidad-costos",
+        version: "v36-auto-github-firestore"
+      }, { merge: true });
+    } else {
+      await deleteDoc(ref);
+    }
+    firebaseReady = true;
+    firebaseError = null;
+    updateFirebaseStatus("✅ Comentario guardado en Firebase");
+    return true;
+  }catch(err){
+    firebaseError = err;
+    updateFirebaseStatus("⚠️ Guardado local; no se pudo sincronizar con Firebase");
+    console.error("Error guardando comentario en Firestore:", err);
+    return false;
+  }
+}
+
+function updateFirebaseStatus(msg){
+  let status = document.getElementById("firebaseCommentStatus");
+  if(!status){
+    const tools = document.querySelector(".detail-comment-tools");
+    if(tools){
+      const div = document.createElement("div");
+      div.id = "firebaseCommentStatus";
+      div.className = "detail-comment-help";
+      div.style.maxWidth = "420px";
+      div.innerHTML = "☁️ Comentarios Firebase: conectando...";
+      tools.appendChild(div);
+      status = div;
+    }
+  }
+  if(status){
+    if(msg) status.textContent = msg;
+    else if(firebaseReady) status.textContent = "☁️ Comentarios compartidos activos: Firebase conectado.";
+    else if(firebaseError) status.textContent = "⚠️ Firebase sin conexión. Se guardará localmente.";
+    else status.textContent = "☁️ Comentarios Firebase: conectando...";
+  }
+}
+
+// Reemplaza funciones originales del dashboard.
+window.loadComments = function(){
+  return Object.assign({}, readLocalComments(), firebaseComments);
+};
+
+window.saveComments = function(map){
+  firebaseComments = Object.assign({}, map || {});
+  writeLocalComments(firebaseComments);
+};
+
+window.getGestionComment = function(r){
+  try { return window.loadComments()[window.commentKey(r)] || ""; }
+  catch(e){ return ""; }
+};
+
+window.setGestionComment = function(key, value){
+  saveFirebaseComment(key, value);
+};
+
+// Segundo listener: mejora el estado visual del botón tras sincronizar.
+document.addEventListener("click", async (e) => {
+  if(e.target && e.target.classList && e.target.classList.contains("comment-apply")){
+    const td = e.target.closest("td");
+    const ta = td ? td.querySelector(".comment-box") : null;
+    const st = td ? td.querySelector(".comment-saved") : null;
+    if(!ta) return;
+
+    if(st){
+      st.textContent = "☁️ Sincronizando...";
+      st.classList.remove("warn");
+      st.classList.add("ok");
+    }
+
+    const ok = await saveFirebaseComment(e.target.dataset.commentKey, ta.value);
+
+    if(st){
+      if(ok){
+        st.textContent = ta.value.trim() ? "☁️ Guardado Firebase" : "Comentario eliminado";
+      }else{
+        st.textContent = ta.value.trim() ? "💾 Guardado local" : "Eliminado local";
+      }
+      st.classList.remove("warn");
+      st.classList.add("ok");
+    }
+  }
+}, true);
+
+// Inserta un pequeño indicador cuando se renderice el detalle.
+const oldRenderAll = window.renderAll;
+if(typeof oldRenderAll === "function" && !oldRenderAll.__firebaseWrapped){
+  window.renderAll = function(){
+    const r = oldRenderAll.apply(this, arguments);
+    setTimeout(() => updateFirebaseStatus(), 200);
+    return r;
+  };
+  window.renderAll.__firebaseWrapped = true;
+}
+
+window.firebaseDashboard = {
+  db,
+  loadFirebaseComments,
+  saveFirebaseComment,
+  get ready(){ return firebaseReady; },
+  get error(){ return firebaseError; }
+};
+
+loadFirebaseComments();
+setTimeout(updateFirebaseStatus, 1000);
+
+;
+
+(function(){
+  function todayEnd(){ const d=new Date(); d.setHours(23,59,59,999); return d; }
+  function isToDate(r){ return !r.fechaCad || r.fechaCad <= todayEnd(); }
+  function isCurrentMonth(r){ const n=new Date(); return r.fechaCad && r.fechaCad.getFullYear()===n.getFullYear() && r.fechaCad.getMonth()===n.getMonth(); }
+  function daysInMonth(d){ return new Date(d.getFullYear(), d.getMonth()+1, 0).getDate(); }
+  function monthName(ymVal){
+    if(!ymVal || !/^\d{4}-\d{2}$/.test(ymVal)) return ymVal||'';
+    const [y,m]=ymVal.split('-').map(Number);
+    return new Date(y,m-1,1).toLocaleDateString('es-CL',{month:'short',year:'numeric'}).replace('.', '');
+  }
+  window.v38FilterMonth = function(m){
+    S.filters.detalle = S.filters.detalle || {}; S.filters.detalle.mes = m;
+    S.filters.perdidas = S.filters.perdidas || {}; S.filters.perdidas.mes = m;
+    S.filters.proveedores = S.filters.proveedores || {}; S.filters.proveedores.mes = m;
+    S.filters.motivos = S.filters.motivos || {}; S.filters.motivos.mes = m;
+    S.active='detalle'; renderAll();
+    setTimeout(()=>document.getElementById('sec-detalle')?.scrollIntoView({behavior:'smooth',block:'start'}),80);
+  };
+  window.v38FilterMotivo = function(mot){
+    S.filters.detalle = S.filters.detalle || {}; S.filters.detalle.motivo = mot;
+    S.filters.motivos = S.filters.motivos || {}; S.filters.motivos.motivo = mot;
+    S.active='detalle'; renderAll();
+    setTimeout(()=>document.getElementById('sec-detalle')?.scrollIntoView({behavior:'smooth',block:'start'}),80);
+  };
+  window.v38ClearMainFilters = function(){
+    ['detalle','perdidas','proveedores','motivos'].forEach(sc=>{S.filters[sc]=S.filters[sc]||{}; delete S.filters[sc].mes; delete S.filters[sc].motivo;});
+    S.active='resumen'; renderAll();
+  };
+  function progressPanel(rows){
+    const now=new Date();
+    const past=rows.filter(isToDate);
+    const cur=rows.filter(r=>isCurrentMonth(r) && isToDate(r));
+    const curAll=rows.filter(isCurrentMonth);
+    const elapsed=now.getDate(), totalDays=daysInMonth(now), progress=Math.round(elapsed/totalDays*100);
+    const curVal=sum(cur), curKg=sum(cur,'stock'), curLots=cur.length;
+    const projected=elapsed>0?curVal/elapsed*totalDays:curVal;
+    const months=[...new Set(past.map(r=>r.mes).filter(Boolean))].sort().slice(-6).reverse();
+    const badges=months.map(m=>`<button type="button" class="v38-month-badge" onclick="v38FilterMonth('${esc(m)}')">📅 ${esc(monthName(m))}</button>`).join('') || '<span class="small">Sin meses cerrados hasta hoy.</span>';
+    return `<div class="v38-progress"><div class="v38-progress-card"><h3>📍 Avance del mes hasta hoy</h3><div class="v38-hint">Se muestran solo vencimientos con fecha hasta hoy. Las fechas futuras quedan fuera del resumen principal.</div><div class="v38-bar"><div class="v38-fill" style="width:${progress}%"></div></div><div class="v38-hint">Día ${elapsed} de ${totalDays} · ${progress}% del mes transcurrido</div><div class="v38-progress-main"><div class="v38-mini-kpi"><b>${fmtCLP(curVal)}</b><span>Costo acumulado mes</span></div><div class="v38-mini-kpi"><b>${fmtNum(curKg)} KG</b><span>Kg acumulados</span></div><div class="v38-mini-kpi"><b>${fmtNum(curLots,0)}</b><span>Lotes hasta hoy</span></div></div><div class="v38-hint">Proyección referencial fin de mes: <b>${fmtCLP(projected)}</b>. Total calendario del mes cargado: ${fmtNum(curAll.length,0)} lotes.</div></div><div class="v38-progress-card"><h3>🖱️ Filtro rápido por mes</h3><div class="v38-hint">Presiona un mes para abrir el detalle filtrado. El gráfico también es clickeable.</div><div style="margin-top:8px">${badges}</div><button type="button" class="btn gray" style="margin-top:10px;padding:7px 10px;font-size:11px" onclick="v38ClearMainFilters()">Limpiar filtros rápidos</button></div></div>`;
+  }
+  function monthlyChartInteractive(rows){
+    rows=rows.filter(isToDate);
+    let by=Object.entries(group(rows,'mes')).map(([m,rs])=>({mes:m,valor:sum(rs),kg:sum(rs,'stock'),lotes:rs.length})).sort((a,b)=>a.mes.localeCompare(b.mes));
+    if(!by.length)return '<div class="empty">Sin vencimientos hasta hoy.</div>';
+    let peak=by.reduce((a,b)=>b.valor>a.valor?b:a,by[0]);
+    let last=by[by.length-1];
+    let improvement=(peak.valor>0 && last.valor<=peak.valor)?Math.round((1-last.valor/peak.valor)*100):0;
+    let data=by.length>12?by.slice(-12):by;
+    let W=920,H=350,pL=64,pR=48,pT=40,pB=58,innerW=W-pL-pR,innerH=H-pT-pB;
+    let maxVal=Math.max(1,...data.map(d=>d.valor));
+    let step=innerW/data.length, bw=Math.max(20,Math.min(48,step*.58));
+    let x=i=>pL+i*step+step/2, y=v=>pT+innerH-(v/maxVal)*innerH;
+    let grid=[0,.25,.5,.75,1].map(t=>`<line x1="${pL}" y1="${pT+innerH*(1-t)}" x2="${W-pR}" y2="${pT+innerH*(1-t)}" stroke="#e2e8f0"/>`).join('');
+    let bars=data.map((d,i)=>{let h=(d.valor/maxVal)*innerH, xx=x(i)-bw/2, yy=pT+innerH-h;let fill=d.mes===peak.mes?'#dc2626':(d.mes===last.mes?'#00843d':'#16a34a');return `<g class="v38-clickable" onclick="v38FilterMonth('${esc(d.mes)}')"><rect x="${xx.toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(4,h).toFixed(1)}" rx="8" fill="${fill}" opacity=".82"><title>${esc(d.mes)} · ${fmtCLP(d.valor)} · ${fmtNum(d.kg)} KG · Click para filtrar</title></rect><text x="${x(i).toFixed(1)}" y="${Math.max(18,yy-7).toFixed(1)}" text-anchor="middle" font-size="10" fill="#0f172a" font-weight="900">${d.valor?('$'+Math.round(d.valor/1000000).toLocaleString('es-CL')+'M'):'$0'}</text></g>`;}).join('');
+    let labels=data.map((d,i)=>`<g class="v38-clickable" onclick="v38FilterMonth('${esc(d.mes)}')"><text x="${x(i).toFixed(1)}" y="${H-28}" text-anchor="middle" font-size="11" fill="#334155" font-weight="900">${esc(d.mes.slice(5))}</text><text x="${x(i).toFixed(1)}" y="${H-13}" text-anchor="middle" font-size="10" fill="#64748b">${esc(d.mes.slice(0,4))}</text></g>`).join('');
+    let status=improvement>0?`Mejora de ${improvement}% desde el pico visible`:'Tendencia en revisión';
+    return `<div class="v38-chart-toolbar"><b>📊 ${status}</b><span>Solo hasta hoy · Click en barras/meses para filtrar detalle</span></div><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${grid}<line x1="${pL}" y1="${pT+innerH}" x2="${W-pR}" y2="${pT+innerH}" stroke="#cbd5e1"/><line x1="${pL}" y1="${pT}" x2="${pL}" y2="${pT+innerH}" stroke="#cbd5e1"/>${bars}${labels}<text x="${pL}" y="20" font-size="13" fill="#334155" font-weight="950">Valor perdido por mes de vencimiento</text><text x="${W-pR}" y="20" text-anchor="end" font-size="11" fill="#64748b">Futuro excluido</text></svg>`;
+  }
+  function motivosInteractive(rows){
+    rows=rows.filter(isToDate);
+    let data=Object.entries(group(rows,'motivo')).map(([m,rs])=>({m,rs,valor:sum(rs),kg:sum(rs,'stock')})).sort((a,b)=>b.valor-a.valor);
+    if(!data.length)return '<div class="empty">Sin motivos hasta hoy.</div>';
+    let mx=Math.max(1,...data.map(d=>d.valor));
+    return `<div class="v38-chart-toolbar"><b>🎯 Motivos hasta hoy</b><span>Click en un motivo para abrir detalle filtrado</span></div><div class="motivo-bars">${data.map((d,i)=>{let w=Math.max(2,Math.round(d.valor/mx*100));let color=['#00843d','#2563eb','#df5a00','#7c3aed','#dc2626','#0f766e'][i%6];return `<div class="motivo-row v38-clickable" onclick="v38FilterMotivo('${esc(d.m)}')"><div class="motivo-name">${badge(d.m)}</div><div class="motivo-track"><div class="motivo-fill" style="width:${w}%;background:${color}"></div></div><div class="motivo-val"><b>${fmtCLP(d.valor)}</b><small>${fmtNum(d.kg)} KG · ${fmtNum(d.rs.length,0)} lotes</small></div></div>`}).join('')}</div>`;
+  }
+  const oldResumen=window.renderResumen;
+  window.renderResumen=function(){
+    let loss=S.loss||[], stockValid=(S.stock||[]).filter(r=>!r.obsoleto&&num(r.dias)>=0);
+    let pastLoss=loss.filter(isToDate);
+    let venc=pastLoss.filter(r=>r.motivo==='Vencido');
+    let futureLoss=loss.filter(r=>!isToDate(r));
+    return `<section class="section active" id="sec-resumen">${executiveAlerts(loss,stockValid)}${progressPanel(loss)}<div class="v38-total-note"><b>Resumen total histórico/calendario completo</b><span>Estos totales mantienen toda la información cargada, incluyendo fechas futuras. Solo el avance, filtros rápidos y gráficos excluyen futuro.</span></div>${kpiHTML(loss)}${kpiLifeHTML(loss)}<div class="grid2"><div class="card"><div class="section-title">Pérdida por mes de vencimiento · hasta hoy</div><div class="card-pad">${monthlyChartInteractive(loss)}</div></div><div class="card"><div class="section-title">Pérdida por motivo · hasta hoy</div><div class="card-pad">${motivosInteractive(loss)}</div></div></div><div class="grid3"><div class="card"><div class="section-title">Vencidos hasta hoy</div><div class="card-pad"><b>${fmtCLP(sum(venc))}</b><br><span class="small">${fmtNum(venc.length,0)} lotes · ${fmtNum(sum(venc,'stock'))} KG</span></div></div><div class="card"><div class="section-title">Fechas futuras conservadas</div><div class="card-pad"><b>${fmtCLP(sum(futureLoss))}</b><br><span class="small">${fmtNum(futureLoss.length,0)} lotes · no se muestran en gráficos de avance.</span></div></div><div class="card"><div class="section-title">Sin precio hasta hoy</div><div class="card-pad"><b>${fmtNum(pastLoss.filter(r=>!r.precio).length,0)}</b><br><span class="small">Registros con motivo sin cruce de precio.</span></div></div></div></section>`;
+  };
+  const oldRenderAllV38=window.renderAll;
+  if(typeof oldRenderAllV38==='function'){
+    window.renderAll=function(){ return oldRenderAllV38.apply(this,arguments); };
+  }
+})();
+
+;
+
+(function(){
+  function v40TodayEnd(){const d=new Date();d.setHours(23,59,59,999);return d;}
+  function v40IsToDate(r){return !r.fechaCad || r.fechaCad<=v40TodayEnd();}
+  function v40MonthName(m){try{if(!m||!/^[0-9]{4}-[0-9]{2}$/.test(m))return m||'';const p=m.split('-').map(Number);return new Date(p[0],p[1]-1,1).toLocaleDateString('es-CL',{month:'short',year:'numeric'}).replace('.','');}catch(e){return m||''}}
+  function v40PositiveInsights(rows){
+    rows=(rows||[]).filter(v40IsToDate).filter(r=>r && r.mes);
+    if(!rows.length)return '';
+    const by=Object.entries(group(rows,'mes')).map(([m,rs])=>({m,rs,valor:sum(rs),kg:sum(rs,'stock'),lotes:rs.length})).sort((a,b)=>a.m.localeCompare(b.m));
+    const last=by[by.length-1]||{valor:0,kg:0,lotes:0,m:''};
+    const prev=by[by.length-2]||null;
+    const peak=by.reduce((a,b)=>b.valor>a.valor?b:a,by[0]||last);
+    const improvement=(peak&&peak.valor>0)?Math.max(0,Math.round((1-last.valor/peak.valor)*100)):0;
+    const prevDelta=(prev&&prev.valor>0)?Math.round((1-last.valor/prev.valor)*100):null;
+    const commented=(S.loss||[]).filter(r=>{try{return !!getGestionComment(r)}catch(e){return false}}).length;
+    const total=(S.loss||[]).length||1;
+    const commentPct=Math.round(commented/total*100);
+    let cards=[];
+    cards.push(`<div class="v40-positive-card"><b>✅ Lectura gerencial más clara</b><span>El total histórico se mantiene completo, pero los gráficos muestran solo el avance <strong>hasta hoy</strong>. Así no se mezclan vencimientos futuros con gestión actual.</span></div>`);
+    if(improvement>0){
+      cards.push(`<div class="v40-positive-card"><b>📉 Tendencia favorable visible</b><span>El último mes visible está <strong>${improvement}%</strong> bajo el peak del período cargado. Es una buena señal para explicar mejora y foco de control.</span></div>`);
+    }else{
+      cards.push(`<div class="v40-positive-card warn"><b>📊 Tendencia en seguimiento</b><span>El dashboard ya separa avance real de fechas futuras, permitiendo revisar el mes actual sin distorsión y priorizar acciones.</span></div>`);
+    }
+    if(prevDelta!==null && prevDelta>0){
+      cards.push(`<div class="v40-positive-card"><b>🟢 Mejora vs mes anterior</b><span>${v40MonthName(last.m)} está <strong>${prevDelta}%</strong> bajo ${v40MonthName(prev.m)} a nivel de valor acumulado visible.</span></div>`);
+    }else if(commented>0){
+      cards.push(`<div class="v40-positive-card info"><b>💬 Gestión documentada</b><span>Ya existen <strong>${commented}</strong> registros con comentario de gestión (${commentPct}% del total cargado), dejando trazabilidad para revisión de gerencia.</span></div>`);
+    }else{
+      cards.push(`<div class="v40-positive-card info"><b>☁️ Base colaborativa activa</b><span>Comentarios guardados en Firebase y archivos centralizados en GitHub/Vercel. Todos ven la misma información.</span></div>`);
+    }
+    return `<div class="v40-positive-panel">${cards.join('')}</div>`;
+  }
+  const oldResumenV40=window.renderResumen;
+  if(typeof oldResumenV40==='function' && !oldResumenV40.__v40Positive){
+    window.renderResumen=function(){
+      let html=oldResumenV40.apply(this,arguments);
+      const panel=v40PositiveInsights(S.loss||[]);
+      if(panel && html.includes('<div class="v38-total-note"')) html=html.replace('<div class="v38-total-note"',panel+'<div class="v38-total-note"');
+      else if(panel && html.includes('</section>')) html=html.replace('</section>',panel+'</section>');
+      return html;
+    };
+    window.renderResumen.__v40Positive=true;
+  }
+  function compactAdminCarga(){
+    const sec=document.getElementById('carga');
+    if(!sec || sec.classList.contains('v40-carga-compact'))return;
+    const pad=sec.querySelector('.card-pad');
+    if(!pad)return;
+    sec.classList.add('v40-carga-compact');
+    const shell=document.createElement('details');
+    shell.className='v40-admin-shell';
+    const summary=document.createElement('summary');
+    summary.innerHTML='<span>☁️ Base automática activa · Administración de carga</span><span class="v40-status-pill">GitHub/Vercel + Firebase</span>';
+    const body=document.createElement('div');
+    body.className='v40-admin-body';
+    while(pad.firstChild) body.appendChild(pad.firstChild);
+    shell.appendChild(summary); shell.appendChild(body); pad.appendChild(shell);
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',compactAdminCarga); else compactAdminCarga();
+  const oldRenderAllV40=window.renderAll;
+  if(typeof oldRenderAllV40==='function' && !oldRenderAllV40.__v40Compact){
+    window.renderAll=function(){const r=oldRenderAllV40.apply(this,arguments);setTimeout(compactAdminCarga,0);return r;};
+    window.renderAll.__v40Compact=true;
+  }
+})();
+
+;
+
+import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+import { getFirestore, collection, getDocs, doc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-firestore.js";
+const firebaseConfig = {apiKey:"AIzaSyCxifqfJD89epa8MVLjDesydh5pLiIoNTU",authDomain:"dashboard-calidad-y-costos.firebaseapp.com",projectId:"dashboard-calidad-y-costos",storageBucket:"dashboard-calidad-y-costos.firebasestorage.app",messagingSenderId:"256388106071",appId:"1:256388106071:web:f8e6a05da4926d5015e012",measurementId:"G-8KVX39G2LG"};
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const COLL = 'evaluaciones_materiales';
+const LOCAL = 'mvEvaluacionMaterialesV1';
+let remoteEvals = {};
+function safeId(key){try{return btoa(unescape(encodeURIComponent(String(key||'')))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'')}catch(e){return String(key||'').replace(/[^\w.-]/g,'_').slice(0,120)}}
+function readLocal(){try{return JSON.parse(localStorage.getItem(LOCAL)||'{}')}catch(e){return {}}}
+function writeLocal(m){try{localStorage.setItem(LOCAL,JSON.stringify(m||{}))}catch(e){}}
+window.loadMaterialEvals = function(){return Object.assign({}, readLocal(), remoteEvals)};
+window.saveMaterialEval = async function(key, patch){
+  const cur = window.loadMaterialEvals();
+  const clean = Object.assign({}, cur[key]||{}, patch||{});
+  clean.actualizadoLocal = new Date().toISOString();
+  cur[key]=clean; remoteEvals[key]=clean; writeLocal(cur);
+  try{await setDoc(doc(db,COLL,safeId(key)), Object.assign({key,actualizadoEn:serverTimestamp(),version:'v41-evaluacion-materiales'}, clean), {merge:true}); return true;}catch(err){console.error('No se pudo guardar evaluación en Firebase:',err); return false;}
+};
+async function loadRemote(){try{const snap=await getDocs(collection(db,COLL));const m={};snap.forEach(d=>{const data=d.data()||{};if(data.key)m[data.key]=data});remoteEvals=m;writeLocal(Object.assign({}, readLocal(), remoteEvals)); if(window.S&&S.active==='evaluacion'&&typeof renderAll==='function') setTimeout(renderAll,150);}catch(e){console.warn('Evaluaciones solo local:',e)}}
+document.addEventListener('click',async e=>{
+  if(e.target&&e.target.id==='evalExportBtn'){
+    const rows=[...document.querySelectorAll('tr[data-eval-row]')];
+    const csv=['Material;Descripcion;Proveedor;Categoria;Codigo FT;Trimestre;Funcional;Calidad/Inocuidad;Cumplimiento tecnico;Fecha revision;Comentario'];
+    rows.forEach(tr=>{const t=[...tr.children].map(td=>td.innerText.trim().replace(/\s+/g,' '));const vals=[t[0],t[1],t[2],t[3],tr.querySelector('[data-field="ft"]')?.value||'',tr.querySelector('[data-field="trimestre"]')?.value||'',tr.querySelector('[data-field="funcional"]')?.value||'',tr.querySelector('[data-field="calidad"]')?.value||'',tr.querySelector('[data-field="tecnico"]')?.value||'',tr.querySelector('[data-field="fechaRev"]')?.value||'',tr.querySelector('[data-field="comentario"]')?.value||''];csv.push(vals.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(';'))});
+    const blob=new Blob([csv.join('\n')],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='evaluacion_materiales_proveedores.csv';a.click();URL.revokeObjectURL(a.href);return;
+  }
+  if(!e.target||!e.target.classList||!e.target.classList.contains('eval-save')) return;
+  const key=e.target.dataset.evalK;const tr=e.target.closest('tr');if(!key||!tr)return;
+  const patch={};tr.querySelectorAll('.eval-input').forEach(inp=>{patch[inp.dataset.field]=inp.value});
+  const st=tr.querySelector(`[data-eval-status="${CSS.escape(key)}"]`);if(st){st.textContent='Guardando...';st.classList.remove('ok')}
+  const ok=await window.saveMaterialEval(key,patch);if(st){st.textContent=ok?'☁️ Guardado Firebase':'💾 Guardado local';st.classList.add('ok')}
+},true);
+loadRemote();
+
+;
+
+(function(){
+  const HIST_LOCAL='mvEvaluacionMaterialesHistorialV1';
+  function readHistLocal(){try{return JSON.parse(localStorage.getItem(HIST_LOCAL)||'[]')}catch(e){return []}}
+  function writeHistLocal(arr){try{localStorage.setItem(HIST_LOCAL,JSON.stringify(arr||[]))}catch(e){}}
+  window.loadMaterialEvalHistory = window.loadMaterialEvalHistory || function(){return readHistLocal()};
+  window.__writeMaterialEvalHistoryLocal = writeHistLocal;
+
+  window.renderEvaluacion = function(){
+    let all=buildSkuMaster();
+    let evals=(window.loadMaterialEvals?window.loadMaterialEvals():loadSkuEvals());
+    let hist=(window.loadMaterialEvalHistory?window.loadMaterialEvalHistory():readHistLocal())||[];
+    let f=S.filters.evaluacion||{};
+    let rows=all.map(item=>{let ev=evals[evalKey(item)]||{};let scores=['funcional','calidad','tecnico'].map(k=>Number(ev[k])||0).filter(x=>x>0);let avg=scores.length?scores.reduce((a,b)=>a+b,0)/scores.length:0;let st=ev.estado||evalStatus(avg);return {...item,ev,avg,estado:st,ft:ev.ft||'',fechaRev:ev.fechaRev||'',trimestre:ev.trimestre||evalQuarter(),comentario:ev.comentario||''}});
+    rows=rows.filter(r=>!f.search||[r.mat,r.desc,r.proveedor,r.ft,r.comentario,r.categoria].join(' ').toLowerCase().includes(String(f.search).toLowerCase()));
+    rows=rows.filter(r=>!f.prov||f.prov==='Todos'||r.proveedor===f.prov).filter(r=>!f.cat||f.cat==='Todos'||r.categoria===f.cat).filter(r=>!f.estado||f.estado==='Todos'||r.estado===f.estado).filter(r=>!f.ft||f.ft==='Todos'||(f.ft==='Con FT'?!!r.ft:!r.ft));
+    let sinft=rows.filter(r=>!r.ft).length,crit=rows.filter(r=>r.estado==='Crítico').length,completos=rows.filter(r=>r.ft&&r.avg&&r.fechaRev).length;
+    let histSorted=[...hist].sort((a,b)=>String(b.fechaCierre||'').localeCompare(String(a.fechaCierre||''))).slice(0,300);
+    let histCrit=histSorted.filter(r=>r.estado==='Crítico').length;
+    const statusOptions=(sel)=>['Pendiente','Aprobado','Observado','Crítico'].map(x=>`<option ${sel===x?'selected':''}>${x}</option>`).join('');
+    const histRows = histSorted.length ? histSorted.map(h=>`<tr data-hist-id="${esc(h.histId||'')}"><td class="nowrap">${esc((h.fechaCierre||'').slice(0,10)||'—')}</td><td class="c"><b>${esc(h.mat||'')}</b></td><td class="desc">${esc(h.desc||'')}</td><td class="prov">${esc(h.proveedor||'')}</td><td>${esc(h.ft||'')}</td><td>${esc(h.trimestre||'')}</td><td class="c">${esc(h.funcional||'—')}</td><td class="c">${esc(h.calidad||'—')}</td><td class="c">${esc(h.tecnico||'—')}</td><td class="c"><b>${h.promedio?fmtNum(h.promedio,1):'—'}</b></td><td class="c"><span class="eval-status ${evalStatusClass(h.estado||'Pendiente')}">${esc(h.estado||'Pendiente')}</span></td><td>${esc(h.comentario||'')}</td><td class="c"><button class="eval-hist-delete" data-hist-id="${esc(h.histId||'')}">Eliminar</button></td></tr>`).join('') : `<tr><td colspan="13" class="eval-hist-empty">Aún no hay evaluaciones cerradas. Usa “Cerrar evaluación” para enviar una copia permanente al historial.</td></tr>`;
+    return `<section class="section" id="sec-evaluacion"><div class="eval-intro"><div class="eval-info"><b>🧪 Evaluación trimestral de materiales y proveedores</b><span>Ahora el módulo separa evaluaciones en proceso e historial cerrado. Guardar mantiene el registro editable; Cerrar evaluación crea una copia permanente para revisión trimestral.</span></div><div class="eval-kpis"><div class="eval-kpi"><b>${fmtNum(rows.length,0)}</b><span>SKU / proveedor visibles</span></div><div class="eval-kpi warn"><b>${fmtNum(sinft,0)}</b><span>Sin código FT</span></div><div class="eval-kpi danger"><b>${fmtNum(crit,0)}</b><span>Críticos en proceso</span></div></div></div><div class="card"><div class="section-title">Evaluación en proceso · editable</div><div class="eval-tabs"><span class="eval-tab-pill green">💾 Guardar = mantiene editable</span><span class="eval-tab-pill blue">📚 Cerrar = copia al historial</span><span class="eval-tab-pill orange">🧾 Historial: ${fmtNum(histSorted.length,0)} cerradas · ${fmtNum(histCrit,0)} críticas</span></div><div class="eval-filters"><div class="field"><label>Buscar</label><input data-s="evaluacion" data-f="search" value="${esc(f.search||'')}" placeholder="SKU, proveedor, FT, comentario..."></div><div class="field"><label>Proveedor</label><select data-s="evaluacion" data-f="prov"><option>Todos</option>${options(all.map(r=>r.proveedor),f.prov)}</select></div><div class="field"><label>Categoría</label><select data-s="evaluacion" data-f="cat"><option>Todos</option>${options(all.map(r=>r.categoria),f.cat)}</select></div><div class="field"><label>Estado</label><select data-s="evaluacion" data-f="estado"><option>Todos</option>${options(['Aprobado','Observado','Crítico','Pendiente'],f.estado)}</select></div><div class="field"><label>FT</label><select data-s="evaluacion" data-f="ft"><option>Todos</option><option ${f.ft==='Con FT'?'selected':''}>Con FT</option><option ${f.ft==='Sin FT'?'selected':''}>Sin FT</option></select></div></div><div class="table-wrap"><table class="eval-table"><thead><tr><th>Material</th><th class="desc">Descripción</th><th class="prov">Proveedor</th><th>Categoría</th><th>Código FT</th><th>Trimestre</th><th>Funcional<br>proceso/producto</th><th>Calidad e<br>inocuidad</th><th>Cumplimiento<br>técnico</th><th>Promedio</th><th>Estado</th><th>Última<br>revisión</th><th>Comentario / acción</th><th>Acciones</th></tr></thead><tbody>${rows.map(r=>{let k=evalKey(r),ev=r.ev||{};return `<tr data-eval-row="${esc(k)}"><td class="c"><b>${esc(r.mat)}</b></td><td class="desc">${esc(r.desc)}</td><td class="prov">${esc(r.proveedor)}</td><td>${esc(r.categoria)}</td><td><input class="eval-ft eval-input" data-eval-k="${esc(k)}" data-field="ft" value="${esc(r.ft)}" placeholder="FT-000"></td><td><input class="eval-ft eval-input" data-eval-k="${esc(k)}" data-field="trimestre" value="${esc(r.trimestre)}"></td><td class="c"><input class="eval-score eval-input" data-eval-k="${esc(k)}" data-field="funcional" type="number" min="1" max="5" value="${esc(ev.funcional||'')}" placeholder="1-5"></td><td class="c"><input class="eval-score eval-input" data-eval-k="${esc(k)}" data-field="calidad" type="number" min="1" max="5" value="${esc(ev.calidad||'')}" placeholder="1-5"></td><td class="c"><input class="eval-score eval-input" data-eval-k="${esc(k)}" data-field="tecnico" type="number" min="1" max="5" value="${esc(ev.tecnico||'')}" placeholder="1-5"></td><td class="c"><b>${r.avg?fmtNum(r.avg,1):'—'}</b></td><td class="c"><select class="eval-status-select eval-input" data-eval-k="${esc(k)}" data-field="estado">${statusOptions(r.estado)}</select></td><td><input class="eval-ft eval-input" data-eval-k="${esc(k)}" data-field="fechaRev" type="date" value="${esc(r.fechaRev)}"></td><td><input class="eval-comment eval-input" data-eval-k="${esc(k)}" data-field="comentario" value="${esc(r.comentario)}" placeholder="Reclamos, defectos, mejora, responsable..."></td><td class="c"><div class="eval-actions-stack"><button class="eval-save" data-eval-k="${esc(k)}">Guardar</button><button class="eval-close" data-eval-k="${esc(k)}">Cerrar evaluación</button><span class="eval-saved ${r.ft||r.avg?'ok':'warn'}" data-eval-status="${esc(k)}">${r.ft||r.avg?'En proceso guardado':'Pendiente completar'}</span></div></td></tr>`}).join('')}</tbody></table></div><div class="eval-export"><small>${fmtNum(completos,0)} evaluaciones completas de ${fmtNum(rows.length,0)} visibles · Escala 1 bajo / 5 excelente.</small><button class="eval-btn-gray" id="evalExportBtn">Exportar evaluación en proceso CSV</button></div></div><div class="card eval-history-card"><div class="section-title">Historial de evaluaciones cerradas · no editable</div><div class="eval-export"><small class="eval-history-note">Cada cierre guarda una foto del material/proveedor con fecha, notas y resultado. No se sobrescribe al seguir editando la evaluación en proceso. Si hubo un error, se puede eliminar usando clave autorizada.</small><div class="eval-history-toolbar"><span class="eval-history-keynote">🔐 Eliminar requiere clave</span><button class="eval-btn-gray" id="evalHistExportBtn">Exportar historial CSV</button></div></div><div class="table-wrap"><table class="eval-history-table"><thead><tr><th>Fecha cierre</th><th>Material</th><th class="desc">Descripción</th><th class="prov">Proveedor</th><th>Código FT</th><th>Trimestre</th><th>Funcional</th><th>Calidad</th><th>Técnico</th><th>Prom.</th><th>Resultado</th><th>Comentario</th><th>Acción</th></tr></thead><tbody>${histRows}</tbody></table></div></div></section>`;
+  };
+})();
+
+;
+
+import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+import { getFirestore, collection, getDocs, doc, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-firestore.js";
+const firebaseConfig = {apiKey:"AIzaSyCxifqfJD89epa8MVLjDesydh5pLiIoNTU",authDomain:"dashboard-calidad-y-costos.firebaseapp.com",projectId:"dashboard-calidad-y-costos",storageBucket:"dashboard-calidad-y-costos.firebasestorage.app",messagingSenderId:"256388106071",appId:"1:256388106071:web:f8e6a05da4926d5015e012",measurementId:"G-8KVX39G2LG"};
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const HIST_COLL='evaluaciones_materiales_historial';
+const HIST_LOCAL='mvEvaluacionMaterialesHistorialV1';
+let remoteHist=[];
+function safeId(key){try{return btoa(unescape(encodeURIComponent(String(key||'')))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'')}catch(e){return String(key||'').replace(/[^\w.-]/g,'_').slice(0,120)}}
+function readLocal(){try{return JSON.parse(localStorage.getItem(HIST_LOCAL)||'[]')}catch(e){return []}}
+function writeLocal(arr){try{localStorage.setItem(HIST_LOCAL,JSON.stringify(arr||[]))}catch(e){}}
+function mergedHist(){const m={};[...readLocal(),...remoteHist].forEach(r=>{if(r&&r.histId)m[r.histId]=r});return Object.values(m)}
+window.loadMaterialEvalHistory=function(){return mergedHist()};
+window.saveMaterialEvalHistory=async function(record){
+  const histId = record.histId || (record.key+'|'+new Date().toISOString());
+  const clean=Object.assign({},record,{histId,fechaCierre:record.fechaCierre||new Date().toISOString(),version:'v42-historial-evaluacion'});
+  const local=mergedHist().filter(r=>r.histId!==histId);local.push(clean);remoteHist=local;writeLocal(local);
+  try{await setDoc(doc(db,HIST_COLL,safeId(histId)), Object.assign({},clean,{actualizadoEn:serverTimestamp()}), {merge:false});return true}catch(e){console.error('No se pudo guardar historial evaluación:',e);return false}
+};
+const HIST_DELETE_KEY='CALIDAD2026';
+window.deleteMaterialEvalHistory=async function(histId, clave){
+  if(String(clave||'').trim()!==HIST_DELETE_KEY) throw new Error('Clave incorrecta');
+  const local=mergedHist().filter(r=>r.histId!==histId);
+  remoteHist=remoteHist.filter(r=>r.histId!==histId);
+  writeLocal(local);
+  try{await deleteDoc(doc(db,HIST_COLL,safeId(histId)));return true}catch(e){console.error('No se pudo eliminar historial en Firebase:',e);return false}
+};
+async function loadHistRemote(){try{const snap=await getDocs(collection(db,HIST_COLL));const arr=[];snap.forEach(d=>{arr.push(d.data()||{})});remoteHist=arr;writeLocal(mergedHist());if(window.S&&S.active==='evaluacion'&&typeof renderAll==='function')setTimeout(renderAll,150)}catch(e){console.warn('Historial evaluación solo local:',e)}}
+document.addEventListener('click',async e=>{
+  if(e.target&&e.target.classList&&e.target.classList.contains('eval-hist-delete')){
+    const histId=e.target.dataset.histId;
+    if(!histId)return;
+    const clave=prompt('Ingresa clave para eliminar esta evaluación cerrada:');
+    if(clave===null)return;
+    if(!confirm('¿Confirmas eliminar esta evaluación cerrada del historial?'))return;
+    e.target.textContent='Eliminando...';
+    try{
+      const ok=await window.deleteMaterialEvalHistory(histId,clave);
+      alert(ok?'Evaluación eliminada del historial.':'Eliminada localmente, pero no se pudo confirmar en Firebase.');
+      if(typeof renderAll==='function')setTimeout(renderAll,150);
+    }catch(err){alert(err.message||'No se pudo eliminar.'); e.target.textContent='Eliminar';}
+    return;
+  }
+  if(e.target&&e.target.id==='evalHistExportBtn'){
+    const hist=(window.loadMaterialEvalHistory?window.loadMaterialEvalHistory():[]).sort((a,b)=>String(b.fechaCierre||'').localeCompare(String(a.fechaCierre||'')));
+    const csv=['Fecha cierre;Material;Descripcion;Proveedor;Codigo FT;Trimestre;Funcional;Calidad/Inocuidad;Cumplimiento tecnico;Promedio;Estado;Comentario'];
+    hist.forEach(h=>csv.push([h.fechaCierre,h.mat,h.desc,h.proveedor,h.ft,h.trimestre,h.funcional,h.calidad,h.tecnico,h.promedio,h.estado,h.comentario].map(v=>'"'+String(v||'').replace(/"/g,'""')+'"').join(';')));
+    const blob=new Blob([csv.join('\n')],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='historial_evaluacion_materiales_proveedores.csv';a.click();URL.revokeObjectURL(a.href);return;
+  }
+  if(!e.target||!e.target.classList||!e.target.classList.contains('eval-close'))return;
+  const key=e.target.dataset.evalK;const tr=e.target.closest('tr');if(!key||!tr)return;
+  const patch={};tr.querySelectorAll('.eval-input').forEach(inp=>{patch[inp.dataset.field]=inp.value});
+  const t=[...tr.children].map(td=>td.innerText.trim().replace(/\s+/g,' '));
+  const scores=['funcional','calidad','tecnico'].map(k=>Number(patch[k])||0).filter(x=>x>0);
+  const promedio=scores.length?scores.reduce((a,b)=>a+b,0)/scores.length:0;
+  const rec={key,mat:t[0],desc:t[1],proveedor:t[2],categoria:t[3],ft:patch.ft||'',trimestre:patch.trimestre||'',funcional:patch.funcional||'',calidad:patch.calidad||'',tecnico:patch.tecnico||'',promedio,estado:patch.estado||'',fechaRev:patch.fechaRev||'',comentario:patch.comentario||'',fechaCierre:new Date().toISOString()};
+  const st=tr.querySelector(`[data-eval-status="${CSS.escape(key)}"]`);if(st){st.textContent='Cerrando...';st.classList.remove('ok','warn')}
+  if(window.saveMaterialEval) await window.saveMaterialEval(key,patch);
+  const ok=await window.saveMaterialEvalHistory(rec);
+  if(st){st.textContent=ok?'📚 Cerrada en historial':'💾 Cerrada local';st.classList.add('ok')}
+  if(typeof renderAll==='function')setTimeout(renderAll,500);
+},true);
+loadHistRemote();
+
+;
+
+(function(){
+  function pad(n){return String(n).padStart(2,'0')}
+  function setUpdateV43(){
+    var el=document.getElementById('lastUpdateV43');
+    if(!el) return;
+    var d=new Date();
+    el.textContent=pad(d.getDate())+'-'+pad(d.getMonth()+1)+'-'+d.getFullYear()+' '+pad(d.getHours())+':'+pad(d.getMinutes());
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',setUpdateV43); else setUpdateV43();
+})();
+
+;
+
+(function(){
+  function ready(fn){ if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',fn); else fn(); }
+  function safe(fn,fallback){try{return fn()}catch(e){console.warn('v60',e);return fallback}}
+  function maxVal(arr,k){return Math.max(1,...arr.map(x=>Number(x[k]||0)))}
+  function moneyShort(n){ n=Number(n||0); if(n>=1000000) return '$'+(n/1000000).toLocaleString('es-CL',{maximumFractionDigits:1})+'M'; return fmtCLP(n).replace('$ ','$'); }
+  function colorFor(i){return ['#ef2029','#ff7a1a','#ffc928','#854be8','#2d74f0','#00a0a8','#94a3b8'][i%7]}
+  function lineChartByMonth(rows){
+    var g=group(rows,r=>r.mes||'Sin fecha'); var months=Object.keys(g).sort(); var data=months.map(m=>({m,v:sum(g[m])})).filter(x=>x.m&&x.m!=='Sin fecha').slice(-12);
+    if(!data.length) return '<div class="empty">Sin datos</div>';
+    var max=Math.max(1,...data.map(d=>d.v)), w=620,h=180,p=18;
+    var pts=data.map((d,i)=>{var x=p+(i*(w-2*p)/Math.max(1,data.length-1)); var y=h-p-(d.v/max)*(h-2*p); return [x,y,d];});
+    var poly=pts.map(p=>p[0]+','+p[1]).join(' ');
+    var area='M'+pts[0][0]+','+(h-p)+' L'+pts.map(p=>p[0]+','+p[1]).join(' L')+' L'+pts[pts.length-1][0]+','+(h-p)+' Z';
+    var labels=pts.map(p=>'<text x="'+p[0]+'" y="176" text-anchor="middle" font-size="11" fill="#334155">'+esc(String(p[2].m).slice(5))+'</text>').join('');
+    var circles=pts.map(p=>'<circle cx="'+p[0]+'" cy="'+p[1]+'" r="4" fill="#fff" stroke="#ef2029" stroke-width="3"><title>'+esc(p[2].m+' · '+fmtCLP(p[2].v))+'</title></circle>').join('');
+    return '<div class="v60-linechart"><svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><path d="'+area+'" fill="rgba(239,32,41,.12)"/><polyline points="'+poly+'" fill="none" stroke="#ef2029" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'+circles+labels+'</svg></div>';
+  }
+  function barsHTML(rows, groupFn, valueFn, limit){
+    var g=group(rows,groupFn); var arr=Object.keys(g).map(k=>({name:k, value:valueFn?valueFn(g[k]):sum(g[k]), count:g[k].length, kg:sum(g[k],'stock')})).sort((a,b)=>b.value-a.value).slice(0,limit||5); var mx=maxVal(arr,'value');
+    if(!arr.length) return '<div class="empty">Sin datos</div>';
+    return arr.map((r,i)=>'<div class="v60-bar-row"><div>'+esc(r.name)+'</div><div class="v60-track"><div class="v60-fill" style="width:'+Math.max(4,(r.value/mx*100))+'%;background:'+colorFor(i)+'"></div></div><div class="v60-val">'+fmtCLP(r.value).replace('$ ','$')+'<br><span style="color:#64748b;font-size:11px">'+fmtNum(r.count,0)+' casos</span></div></div>').join('');
+  }
+  function causaCat(text){
+    var s=lower(text||'');
+    if(!s) return 'Sin comentario';
+    if(s.includes('valle del norte')||s.includes('proveedor')||s.includes('devolu')||s.includes('extensi')||s.includes('recep')||s.includes('vida util')||s.includes('vida útil')) return 'Proveedor';
+    if(s.includes('politica')||s.includes('política')||s.includes('sobrestock')||s.includes('compra')||s.includes('proye')||s.includes('planific')) return 'Planificación';
+    if(s.includes('formula')||s.includes('fórmula')||s.includes('receta')||s.includes('maestro')||s.includes('desarrollo')) return 'Desarrollo / Fórmulas';
+    if(s.includes('fifo')||s.includes('operaci')||s.includes('producci')||s.includes('gestion interna')||s.includes('gestión interna')) return 'Operación (FIFO)';
+    if(s.includes('venta')||s.includes('cliente')||s.includes('comercial')||s.includes('aceptaci')) return 'Comercial';
+    if(s.includes('sap')||s.includes('sistema')||s.includes('fecha incorrecta')||s.includes('error sistema')) return 'Sistema SAP';
+    if(s.includes('calidad')||s.includes('rechazo')||s.includes('sensorial')) return 'Calidad';
+    return 'Otros';
+  }
+  function resp(c){return {'Proveedor':'Abastecimiento','Planificación':'Planificación','Desarrollo / Fórmulas':'Desarrollo','Operación (FIFO)':'Producción','Comercial':'Comercial','Sistema SAP':'Master Data','Calidad':'Calidad','Otros':'Planificación','Sin comentario':'Planificación'}[c]||'Planificación'}
+  function causeRows(){return (S.loss||[]).map(r=>{var cg=getGestionComment(r)||r.comentario||r.motivo||''; var cat=causaCat(cg); return Object.assign({},r,{causa:cat,responsable:resp(cat),comentarioCausa:cg});});}
+  function topComments(rows){var g={}; rows.forEach(r=>{var c=norm(getGestionComment(r)||r.comentario||r.motivo||'Sin comentario'); g[c]=(g[c]||0)+1}); return Object.keys(g).map(k=>({name:k,count:g[k]})).sort((a,b)=>b.count-a.count).slice(0,5)}
+  window.renderCausasV60=function(){var rows=causeRows(); var total=rows.length, totalVal=sum(rows); var by=Object.entries(group(rows,'causa')).map(([k,v])=>({name:k,count:v.length,value:sum(v),resp:resp(k)})).sort((a,b)=>b.count-a.count); var main=by[0]||{name:'Sin datos',count:0,value:0,resp:'—'}; var impact=[...by].sort((a,b)=>b.value-a.value)[0]||main; var top5=by.slice(0,5).reduce((s,x)=>s+x.count,0); var maxC=maxVal(by,'count'); var maxV=maxVal(by,'value'); var comments=topComments(rows); var conic=by.slice(0,7).reduce((acc,x,i)=>{var pctv=totalVal?x.value/totalVal*100:0; var start=acc.sum; acc.parts.push(colorFor(i)+' '+start+'% '+(start+pctv)+'%'); acc.sum+=pctv; return acc},{sum:0,parts:[]}).parts.join(',');
+    return '<section class="section active" id="sec-causas"><div class="v60-header"><div class="v60-title"><h1>Causas raíz</h1><span>Análisis gerencial de comentarios, responsables e impacto económico.</span></div></div><div class="v60-causas-grid"><div class="v60-card"><h3>Causas raíz principales ⓘ</h3><div class="v60-mini-kpis"><div class="v60-mini" style="background:#fff1f2"><span>Causa principal</span><b>'+esc(main.name)+'</b><small>'+fmtNum(main.count,0)+' casos</small></div><div class="v60-mini" style="background:#fff7ed"><span>Mayor impacto $</span><b>'+esc(impact.name)+'</b><small>'+fmtCLP(impact.value)+'</small></div><div class="v60-mini" style="background:#eff6ff"><span>Total causas</span><b>'+fmtNum(by.length,0)+'</b><small>categorías</small></div><div class="v60-mini" style="background:#f0fdf4"><span>Top 5 causas</span><b>'+fmtNum(top5,0)+'</b><small>'+(total?fmtNum(top5/total*100,1):'0,0')+'% casos</small></div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:18px"><div><h3>Pareto de causas</h3>'+by.map((r,i)=>'<div class="v60-bar-row"><div>'+esc(r.name)+'</div><div class="v60-track"><div class="v60-fill" style="width:'+Math.max(4,r.count/maxC*100)+'%;background:'+colorFor(i)+'"></div></div><div class="v60-val">'+fmtNum(r.count,0)+'<br><span style="font-size:11px;color:#64748b">'+(total?fmtNum(r.count/total*100,1):'0,0')+'%</span></div></div>').join('')+'</div><div><h3>Impacto económico por causa ($)</h3><div class="v60-donut-wrap"><div class="v60-donut" style="background:conic-gradient('+(conic||'#e5e7eb 0 100%')+')"><b>'+moneyShort(totalVal)+'<br><span style="font-size:11px;color:#64748b">Total</span></b></div><div>'+by.slice(0,7).map((r,i)=>'<div style="display:flex;justify-content:space-between;gap:8px;margin:8px 0"><span><i class="v60-dot" style="background:'+colorFor(i)+'"></i> '+esc(r.name)+'</span><b>'+fmtCLP(r.value)+'</b></div>').join('')+'</div></div></div></div></div><div><div class="v60-card" style="margin-bottom:16px"><h3>Semáforo gerencial (por causa)</h3><table class="v60-table-clean"><thead><tr><th>Causa</th><th>Casos</th><th>Semáforo</th><th>Responsable</th></tr></thead><tbody>'+by.map((r,i)=>'<tr><td>'+esc(r.name)+'</td><td><b>'+fmtNum(r.count,0)+'</b></td><td><span class="v60-dot" style="background:'+(r.count>20?'#ef2029':r.count>10?'#ff7a1a':'#008f45')+'"></span></td><td>'+esc(r.resp)+'</td></tr>').join('')+'</tbody></table></div><div class="v60-card"><h3>Top 5 comentarios más repetidos</h3><table class="v60-table-clean"><thead><tr><th>Comentario</th><th>Casos</th></tr></thead><tbody>'+comments.map(c=>'<tr><td>'+esc(c.name)+'</td><td><b>'+fmtNum(c.count,0)+'</b></td></tr>').join('')+'</tbody></table></div></div></div></section>';
+  }
+  window.renderResumen=function(){var loss=S.loss||[], stock=S.stock||[]; var stockValid=stock.filter(r=>!r.obsoleto&&num(r.dias)>=0); var total=sum(loss), kg=sum(loss,'stock'), avg=kg?total/kg:0; var last=window.__v60LastUpdate||safe(()=>document.getElementById('lastUpdateV43').textContent,'—');
+    if(!loss.length && !stock.length){return '<section class="section active" id="sec-resumen"><div class="v60-header"><div class="v60-title"><h1>Resumen Ejecutivo</h1><span>Última actualización: <b>'+esc(last||'pendiente')+'</b></span></div><div class="v60-controls"><span class="v60-pill">☁️ Esperando carga GitHub/Vercel</span></div></div><div class="card card-pad"><b>Cargando información centralizada...</b><br><span class="small">Si estás en Vercel, el dashboard leerá automáticamente los 3 archivos desde /datos. Si estás en archivo local, usa Administrador para cargar los Excel manualmente.</span></div></section>'}
+    return '<section class="section active" id="sec-resumen"><div class="v60-header"><div class="v60-title"><h1>Resumen Ejecutivo</h1><span>Última actualización: <b>'+esc(last||'—')+'</b> ↻</span></div><div class="v60-controls"><span class="v60-pill">☁️ GitHub/Vercel + carga manual</span><span class="v60-pill"><span class="tiny">Vista</span><button class="v60-btn active" data-view="gerencial">Gerencial</button><button class="v60-btn" data-view="operativa">Operativa</button></span><span class="v60-pill"><span class="tiny">Tabla</span><button class="v60-btn" data-density="compact">Compacta</button><button class="v60-btn active" data-density="normal">Normal</button><button class="v60-btn" data-density="wide">Amplia</button></span><button class="v60-pill v60-full" id="v60FullBtn">↙ Normal</button></div></div><div class="v60-kpi-grid"><div class="v60-kpi"><div class="v60-kpi-icon v60-red">$</div><div><small>Pérdida total</small><b>'+fmtCLP(total).replace('$ ','$')+'</b><span>Costo total de riesgo</span><em class="v60-chip">Histórico cargado</em></div></div><div class="v60-kpi"><div class="v60-kpi-icon v60-orange">📦</div><div><small>Lotes afectados</small><b>'+fmtNum(loss.length,0)+'</b><span>Lotes con pérdida</span><em class="v60-chip ok">Cruce precio '+(loss.filter(r=>r.precio).length?'OK':'pendiente')+'</em></div></div><div class="v60-kpi"><div class="v60-kpi-icon v60-green">KG</div><div><small>Kilos afectados</small><b>'+fmtNum(kg,1)+' KG</b><span>Total kilos con pérdida</span><em class="v60-chip">Stock SAP</em></div></div><div class="v60-kpi"><div class="v60-kpi-icon v60-blue">↗</div><div><small>Costo promedio / KG</small><b>'+fmtCLP(avg).replace('$ ','$')+'</b><span>Promedio ponderado</span><em class="v60-chip">KG × precio OC</em></div></div></div><div class="v60-dashboard-grid"><div class="v60-card"><h3>Pérdida por motivo (Top 5)</h3>'+barsHTML(loss,r=>r.motivo||'Sin motivo',null,5)+'<div class="v60-card-link">Ver detalle completo →</div></div><div class="v60-card"><h3>Pérdida mensual ($)</h3>'+localLineChartByMonth(loss)+'<div class="v60-card-link">Ver análisis mensual →</div></div><div class="v60-card"><h3>Ranking proveedores (pérdida $)</h3>'+barsHTML(loss,r=>r.proveedor||'—',null,5)+'<div class="v60-card-link">Ver detalle proveedores →</div></div></div>'+renderCausasV60().replace('<section class="section active" id="sec-causas"><div class="v60-header"><div class="v60-title"><h1>Causas raíz</h1><span>Análisis gerencial de comentarios, responsables e impacto económico.</span></div></div>','<div>') .replace('</section>','</div>')+'<div class="v60-footer"><span>Los datos presentados corresponden al cruce de Stock SAP + Precios OC + MB51 Fecha ingreso.</span><span>Dashboard Calidad & Costos | Minuto Verde</span></div></section>';
+  }
+  window.renderStock=function(){var base=(S.stock||[]).filter(r=>!r.obsoleto&&num(r.dias)>=0); var rows=filtered(base,'stock').sort((a,b)=>a.dias-b.dias); var riesgo=rows.filter(r=>r.dias<=30); var q=rows.filter(r=>r.q); var sinPrecio=rows.filter(r=>!r.precio); return '<section class="section active" id="sec-stock"><div class="v60-header"><div class="v60-title"><h1>Calidad / Stock / Vencimientos</h1><span>Vista operativa para seguimiento de lotes, Q, riesgo por días y valorización KG × precio OC.</span></div></div>'+filters('stock','stock')+'<div class="v60-stock-kpis"><div class="v60-stock-kpi"><b>'+fmtNum(rows.length,0)+'</b><span>Registros visibles</span></div><div class="v60-stock-kpi warn"><b>'+fmtNum(riesgo.length,0)+'</b><span>≤ 30 días</span></div><div class="v60-stock-kpi blue"><b>'+fmtNum(q.length,0)+'</b><span>Stock en Q</span></div><div class="v60-stock-kpi danger"><b>'+fmtCLP(sum(rows))+'</b><span>Valor inventario</span></div></div><div class="card"><div class="section-title">Detalle stock y vencimientos · '+fmtNum(rows.length,0)+' registros · Sin precio: '+fmtNum(sinPrecio.length,0)+'</div><div class="table-wrap"><table><thead><tr><th>Estado</th><th>Q</th><th>Material</th><th class="desc">Descripción</th><th class="prov">Proveedor</th><th>Lote</th><th>Fabricación</th><th>Recepción</th><th>Vencimiento</th><th>Días</th><th>Stock KG</th><th>Precio OC</th><th>Valor</th><th>Motivo / Comentario</th></tr></thead><tbody>'+rows.map(r=>'<tr><td>'+badge(r.estado)+'</td><td>'+(r.q?badge('Q'):badge('Sin Q'))+'</td><td class="c">'+esc(r.mat)+'</td><td class="desc">'+esc(r.desc)+'</td><td class="prov">'+esc(r.proveedor)+'</td><td class="c">'+esc(r.lote)+'</td><td class="c">'+fd(r.fechaCrea)+'</td><td class="c">'+fd(r.fechaIngreso)+'</td><td class="c">'+fd(r.fechaCad)+'</td><td class="r"><b>'+fmtNum(r.dias,0)+'</b></td><td class="r">'+fmtNum(r.stock)+'</td><td class="r">'+(r.precio?fmtCLP(r.precio):'<span style="color:#dc2626;font-weight:950">Sin precio</span>')+'</td><td class="r"><b>'+fmtCLP(r.valor)+'</b></td><td>'+esc(r.comentario||'—')+'</td></tr>').join('')+'</tbody></table></div></div></section>'}
+  var oldRenderSection=window.renderSection;
+  window.renderSection=function(id){ if(id==='causas') return renderCausasV60(); if(id==='admin') return '<section class="section active" id="sec-admin"><div class="v60-header"><div class="v60-title"><h1>Administrador</h1><span>Carga manual de respaldo y actualización de los 3 archivos base.</span></div></div></section>'; if(id==='resumen') return renderResumen(); if(id==='stock') return renderStock(); return oldRenderSection?oldRenderSection(id):renderResumen(); };
+  var oldSetActive=window.setActive;
+  window.setActive=function(id){ S.active=id; document.body.classList.toggle('v60-admin',id==='admin'); if(id==='admin'){document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.id===id)); return;} renderAll(); };
+  var oldRenderAll=window.renderAll;
+  window.renderAll=function(){ document.body.classList.remove('v60-admin'); oldRenderAll(); setTimeout(bindV60Controls,0); };
+  function rebuildNav(){
+    var nav=document.getElementById('nav'); if(!nav) return;
+    SECTIONS.length=0; [['resumen','🏠 Resumen Ejecutivo'],['causas','🎯 Causas Raíz'],['detalle','▦ Detalle de Lotes'],['perdidas','💰 Pérdidas / Costos'],['proveedores','👥 Proveedores'],['motivos','🏷️ Motivos SAP'],['productos','🛒 Compras / Sobrestock'],['stock','📦 Calidad / Stock / Vencimientos'],['q','🔍 Stock Q'],['evaluacion','☑️ Evaluación materiales'],['admin','⚙️ Administrador']].forEach(x=>SECTIONS.push(x));
+    nav.innerHTML='<div class="nav-group-title ger">Gerencia</div>'+SECTIONS.slice(0,3).map(([id,t])=>'<button data-id="'+id+'">'+t+'</button>').join('')+'<div class="nav-group-title op">Análisis operativo</div>'+SECTIONS.slice(3,7).map(([id,t])=>'<button data-id="'+id+'">'+t+'</button>').join('')+'<div class="nav-group-title cal">Calidad / Stock / Programación</div>'+SECTIONS.slice(7,10).map(([id,t])=>'<button data-id="'+id+'">'+t+'</button>').join('')+'<div class="nav-group-title adm">Administración</div>'+SECTIONS.slice(10).map(([id,t])=>'<button data-id="'+id+'">'+t+'</button>').join('');
+    nav.querySelectorAll('button').forEach(b=>b.onclick=function(){setActive(this.dataset.id)});
+  }
+  function bindV60Controls(){
+    document.querySelectorAll('[data-density]').forEach(btn=>{btn.onclick=function(){setDensity(btn.dataset.density)}});
+    var full=document.getElementById('v60FullBtn'); if(full) full.onclick=function(){document.body.classList.toggle('v60-screen'); if(!document.fullscreenElement && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(()=>{}); else if(document.exitFullscreen) document.exitFullscreen().catch(()=>{});};
+  }
+  function setDensity(mode){document.body.classList.toggle('table-compact',mode==='compact');document.body.classList.toggle('table-wide',mode==='wide');document.querySelectorAll('[data-density]').forEach(b=>b.classList.toggle('active',b.dataset.density===mode)); try{localStorage.setItem('mvTableDensity',mode)}catch(e){}}
+  function updateLast(){var d=new Date(); var pad=n=>String(n).padStart(2,'0'); window.__v60LastUpdate=pad(d.getDate())+'/'+pad(d.getMonth()+1)+'/'+d.getFullYear()+' '+pad(d.getHours())+':'+pad(d.getMinutes()); var el=document.getElementById('lastUpdateV43'); if(el) el.textContent=window.__v60LastUpdate;}
+  var oldProcess=window.process; window.process=function(){ var r=oldProcess.apply(this,arguments); updateLast(); return r; };
+  var oldAuto=window.autoLoadGithubFiles; if(oldAuto) window.autoLoadGithubFiles=async function(){var r=await oldAuto.apply(this,arguments); updateLast(); return r;};
+  var oldApply=window.applyFiles; if(oldApply) window.applyFiles=async function(){var r=await oldApply.apply(this,arguments); updateLast(); return r;};
+  ready(function(){ rebuildNav(); updateLast(); setDensity(localStorage.getItem('mvTableDensity')||'normal'); setActive('resumen'); setTimeout(bindV60Controls,400); });
+})();
+
+;
+
+(function(){
+  function activateCompactOnce(){
+    try{
+      if(!localStorage.getItem('mvTableDensity')) localStorage.setItem('mvTableDensity','compact');
+      document.body.classList.remove('table-wide');
+      document.body.classList.add('table-compact');
+      document.querySelectorAll('[data-density]').forEach(function(b){b.classList.toggle('active',b.getAttribute('data-density')==='compact');});
+    }catch(e){}
+  }
+  window.addEventListener('load',function(){
+    setTimeout(function(){
+      try{
+        if(localStorage.getItem('mvTableDensity')==='compact') activateCompactOnce();
+      }catch(e){}
+    },600);
+  });
+})();
+
+;
+
+(function(){
+  function safe(fn,def){try{return fn()}catch(e){return def}}
+  function n(v){return Number(v||0)||0}
+  function ymName(m){try{if(!/^\d{4}-\d{2}$/.test(m||''))return m||'Sin mes';var p=m.split('-').map(Number);return new Date(p[0],p[1]-1,1).toLocaleDateString('es-CL',{month:'long',year:'numeric'}).replace('.','')}catch(e){return m||'Sin mes'}}
+  function money(v){return (typeof fmtCLP==='function')?fmtCLP(v):('$'+Math.round(n(v)).toLocaleString('es-CL'))}
+  function number(v,d){return (typeof fmtNum==='function')?fmtNum(v,d):n(v).toLocaleString('es-CL')}
+  function html(s){return (typeof esc==='function')?esc(s):String(s??'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+  function total(rows,k){return rows.reduce(function(a,r){return a+n(k?r[k]:r.valor)},0)}
+  function groupByMonth(rows){
+    var map={}; (rows||[]).forEach(function(r){var m=r.mes||r.mesVenc||'Sin fecha'; if(!map[m])map[m]=[]; map[m].push(r)});
+    return Object.keys(map).sort().map(function(m){var rs=map[m];return {mes:m,rows:rs,valor:total(rs),kg:total(rs,'stock'),lotes:rs.length}})
+  }
+  function currentYM(){
+    var d=new Date();
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  }
+  function isYM(m){return /^\d{4}-\d{2}$/.test(m||'')}
+  function untilCurrentMonth(data){
+    var today=currentYM();
+    return (data||[]).filter(function(d){return isYM(d.mes) && d.mes<=today});
+  }
+
+  function localColor(i){return ['#ef2029','#ff7a1a','#ffc928','#8b5cf6','#2d74f0','#00964b','#64748b'][i%7]}
+  function localGroup(rows,fn){var m={};(rows||[]).forEach(function(r){var k=(fn?fn(r):'Sin grupo')||'Sin grupo';(m[k]=m[k]||[]).push(r)});return m;}
+  function localMax(arr,k){return Math.max(1,...(arr||[]).map(function(x){return n(x[k])}))}
+  function localBarsHTML(rows, groupFn, valueFn, limit){
+    var g=localGroup(rows,groupFn); var arr=Object.keys(g).map(function(k){return {name:k,value:valueFn?valueFn(g[k]):total(g[k]),count:g[k].length,kg:total(g[k],'stock')}}).sort(function(a,b){return b.value-a.value}).slice(0,limit||5);
+    var mx=localMax(arr,'value'); if(!arr.length) return '<div class="empty">Sin datos</div>';
+    return arr.map(function(r,i){return '<div class="v60-bar-row"><div>'+html(r.name)+'</div><div class="v60-track"><div class="v60-fill" style="width:'+Math.max(4,(r.value/mx*100))+'%;background:'+localColor(i)+'"></div></div><div class="v60-val">'+money(r.value).replace('$ ','$')+'<br><span style="color:#64748b;font-size:11px">'+number(r.count,0)+' casos</span></div></div>'}).join('');
+  }
+  function localLineChartByMonth(rows){
+    var data=groupByMonth(rows).filter(function(d){return d.mes && d.mes!=='Sin fecha'}).slice(-12);
+    if(!data.length) return '<div class="empty">Sin datos</div>';
+    var W=620,H=180,p=18,max=Math.max(1,...data.map(function(d){return d.valor}));
+    var pts=data.map(function(d,i){var x=p+(i*(W-2*p)/Math.max(1,data.length-1)); var y=H-p-(d.valor/max)*(H-2*p); return [x,y,d];});
+    var poly=pts.map(function(p){return p[0]+','+p[1]}).join(' ');
+    var area='M'+pts[0][0]+','+(H-p)+' L'+pts.map(function(p){return p[0]+','+p[1]}).join(' L')+' L'+pts[pts.length-1][0]+','+(H-p)+' Z';
+    var labels=pts.map(function(p){return '<text x="'+p[0]+'" y="176" text-anchor="middle" font-size="11" fill="#334155">'+html(String(p[2].mes).slice(5))+'</text>'}).join('');
+    var circles=pts.map(function(p){return '<circle cx="'+p[0]+'" cy="'+p[1]+'" r="4" fill="#fff" stroke="#ef2029" stroke-width="3"><title>'+html(p[2].mes+' · '+money(p[2].valor))+'</title></circle>'}).join('');
+    return '<div class="v60-linechart"><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none"><path d="'+area+'" fill="rgba(239,32,41,.12)"/><polyline points="'+poly+'" fill="none" stroke="#ef2029" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'+circles+labels+'</svg></div>';
+  }
+
+  function selectedMonth(){return safe(function(){return localStorage.getItem('mv62SelectedMonth')||''},'')}
+  function setSelectedMonth(m){try{localStorage.setItem('mv62SelectedMonth',m||'')}catch(e){}}
+  function openLotsByMonth(m){
+    if(!m || m==='Todos') return;
+    setSelectedMonth(m);
+    S.filters.detalle=S.filters.detalle||{};
+    S.filters.detalle.mes=m;
+    delete S.filters.detalle.dateFrom; delete S.filters.detalle.dateTo;
+    S.active='detalle';
+    if(typeof renderAll==='function') renderAll();
+    setTimeout(function(){document.getElementById('sec-detalle')?.scrollIntoView({behavior:'smooth',block:'start'});},80);
+  }
+  window.v62OpenLotsByMonth=openLotsByMonth;
+  window.v62SelectMonth=function(m){setSelectedMonth(m); if(typeof renderAll==='function')renderAll();};
+  window.v62ClearMonth=function(){setSelectedMonth(''); ['detalle','perdidas','proveedores','motivos'].forEach(function(sc){S.filters[sc]=S.filters[sc]||{};delete S.filters[sc].mes;}); if(typeof renderAll==='function')renderAll();};
+  function interactiveChart(data,sel){
+    var onlyUntilToday=untilCurrentMonth(data);
+    if(!onlyUntilToday.length)return '<div class="empty">Sin datos mensuales hasta el mes actual.</div>';
+    var view=onlyUntilToday.slice(-12); var W=920,H=330,pL=62,pR=38,pT=38,pB=58,innerW=W-pL-pR,innerH=H-pT-pB;
+    var maxVal=Math.max(1,...view.map(d=>d.valor)); var step=innerW/view.length; var bw=Math.max(22,Math.min(54,step*.58));
+    var grid=[0,.25,.5,.75,1].map(function(t){var y=pT+innerH*(1-t);return '<line x1="'+pL+'" y1="'+y+'" x2="'+(W-pR)+'" y2="'+y+'" stroke="#e2e8f0"/>'}).join('');
+    var bars=view.map(function(d,i){var x=pL+i*step+step/2, h=d.valor/maxVal*innerH, y=pT+innerH-h, isSel=d.mes===sel; var fill=isSel?'#ef2029':'#00843d';
+      return '<g class="v62-bar" onclick="v62OpenLotsByMonth(\''+html(d.mes)+'\')"><rect x="'+(x-bw/2).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+Math.max(5,h).toFixed(1)+'" rx="9" fill="'+fill+'" opacity="'+(isSel?'.96':'.78')+'"><title>'+html(ymName(d.mes))+' · '+money(d.valor)+' · '+number(d.kg,1)+' KG · '+number(d.lotes,0)+' lotes · Click para ver lotes</title></rect><text x="'+x.toFixed(1)+'" y="'+Math.max(18,y-7).toFixed(1)+'" text-anchor="middle" font-size="10" fill="#061323" font-weight="950">'+(d.valor?('$'+Math.round(d.valor/1000000).toLocaleString('es-CL')+'M'):'$0')+'</text><text x="'+x.toFixed(1)+'" y="'+(H-29)+'" text-anchor="middle" font-size="11" fill="'+(isSel?'#ef2029':'#334155')+'" font-weight="950">'+html(String(d.mes).slice(5))+'</text><text x="'+x.toFixed(1)+'" y="'+(H-14)+'" text-anchor="middle" font-size="10" fill="#64748b">'+html(String(d.mes).slice(0,4))+'</text></g>';
+    }).join('');
+    return '<div class="v62-svg-wrap"><svg viewBox="0 0 '+W+' '+H+'">'+grid+'<line x1="'+pL+'" y1="'+(pT+innerH)+'" x2="'+(W-pR)+'" y2="'+(pT+innerH)+'" stroke="#cbd5e1"/><line x1="'+pL+'" y1="'+pT+'" x2="'+pL+'" y2="'+(pT+innerH)+'" stroke="#cbd5e1"/>'+bars+'<text x="'+pL+'" y="20" font-size="13" fill="#061323" font-weight="950">Pérdida mensual por fecha de vencimiento</text><text x="'+(W-pR)+'" y="20" text-anchor="end" font-size="11" fill="#64748b">Click en barra = ver lotes</text></svg></div>';
+  }
+  function previewRows(rows){
+    var top=(rows||[]).slice().sort(function(a,b){return n(b.valor)-n(a.valor)}).slice(0,8);
+    if(!top.length)return '<div class="empty">Selecciona un mes para previsualizar los principales lotes.</div>';
+    return '<div class="v62-table-preview"><table><thead><tr><th>Material</th><th>Descripción</th><th>Proveedor</th><th>Lote</th><th>KG</th><th>Valor</th></tr></thead><tbody>'+top.map(function(r){return '<tr><td>'+html(r.mat)+'</td><td class="desc">'+html(r.desc)+'</td><td>'+html(r.proveedor)+'</td><td>'+html(r.lote)+'</td><td class="r">'+number(r.stock,1)+'</td><td class="r"><b>'+money(r.valor)+'</b></td></tr>'}).join('')+'</tbody></table></div>';
+  }
+  function monthModule(rows){
+    var dataAll=groupByMonth(rows);
+    var data=untilCurrentMonth(dataAll);
+    var sel=selectedMonth();
+    if(sel && !data.some(function(d){return d.mes===sel})) sel='';
+    var selected=sel?data.find(function(d){return d.mes===sel}):data[data.length-1];
+    if(!selected)selected={mes:'',rows:[],valor:0,kg:0,lotes:0};
+    var options='<option value="">Seleccionar mes hasta hoy...</option>'+data.slice().reverse().map(function(d){return '<option value="'+html(d.mes)+'" '+(d.mes===selected.mes?'selected':'')+'>'+html(ymName(d.mes))+' · '+money(d.valor)+'</option>'}).join('');
+    var chips=data.slice(-6).reverse().map(function(d){return '<button type="button" class="v62-month-chip '+(d.mes===selected.mes?'active':'')+'" onclick="v62SelectMonth(\''+html(d.mes)+'\')">📅 '+html(ymName(d.mes))+'</button>'}).join('');
+    return '<div class="v62-month-panel"><div class="v62-card"><h3>📊 Gráfico interactivo mensual</h3><div class="v62-sub">Muestra solo meses hasta la fecha actual. Haz click en una barra para abrir automáticamente el detalle de lotes filtrado.</div>'+interactiveChart(dataAll,selected.mes)+'<div class="v62-hint">Mes seleccionado: <b>'+html(ymName(selected.mes))+'</b>. En este gráfico se excluyen vencimientos futuros; el detalle completo sigue disponible en Detalle Lotes.</div></div><div class="v62-card"><h3>🔎 Ver lotes por mes</h3><div class="v62-toolbar"><div class="v62-field"><label>Mes de vencimiento</label><select id="v62MonthSelect">'+options+'</select></div><button type="button" class="v62-btn" id="v62OpenMonthBtn">Ver lotes</button><button type="button" class="v62-btn gray" onclick="v62ClearMonth()">Limpiar</button></div><div class="v62-selected"><div class="v62-mini"><b>'+money(selected.valor)+'</b><span>Valor mes</span></div><div class="v62-mini"><b>'+number(selected.kg,1)+' KG</b><span>Kilos mes</span></div><div class="v62-mini"><b>'+number(selected.lotes,0)+'</b><span>Lotes mes</span></div></div><div class="v62-month-list">'+chips+'</div>'+previewRows(selected.rows)+'<button type="button" class="v62-btn dark" style="margin-top:10px;width:100%" onclick="v62OpenLotsByMonth(\''+html(selected.mes)+'\')">Abrir detalle de lotes filtrado</button></div></div>';
+  }
+  function bindV62(){
+    var sel=document.getElementById('v62MonthSelect'); if(sel&&!sel.__v62){sel.__v62=true; sel.addEventListener('change',function(){window.v62SelectMonth(this.value)});}
+    var btn=document.getElementById('v62OpenMonthBtn'); if(btn&&!btn.__v62){btn.__v62=true; btn.addEventListener('click',function(){var s=document.getElementById('v62MonthSelect'); if(s&&s.value)openLotsByMonth(s.value)});}
+  }
+  var previousRenderResumen=window.renderResumen;
+  window.renderResumen=function(){
+    var loss=safe(function(){return S.loss||[]},[]), stock=safe(function(){return S.stock||[]},[]);
+    var stockValid=stock.filter(function(r){return !r.obsoleto&&n(r.dias)>=0}); var totalVal=total(loss), kg=total(loss,'stock'), avg=kg?totalVal/kg:0; var last=window.__v60LastUpdate||safe(function(){return document.getElementById('lastUpdateV43').textContent},'—');
+    if(!loss.length && !stock.length) return previousRenderResumen?previousRenderResumen():'';
+    var base='<section class="section active" id="sec-resumen"><div class="v60-header"><div class="v60-title"><h1>Resumen Ejecutivo</h1><span>Última actualización: <b>'+html(last||'—')+'</b> ↻</span></div><div class="v60-controls"><span class="v60-pill">☁️ GitHub/Vercel + carga manual</span><span class="v60-pill"><span class="tiny">Tabla</span><button class="v60-btn" data-density="compact">Compacta</button><button class="v60-btn active" data-density="normal">Normal</button><button class="v60-btn" data-density="wide">Amplia</button></span><button class="v60-pill v60-full" id="v60FullBtn">Pantalla completa</button></div></div><div class="v60-kpi-grid"><div class="v60-kpi"><div class="v60-kpi-icon v60-red">$</div><div><small>Pérdida total</small><b>'+money(totalVal).replace('$ ','$')+'</b><span>Costo total de riesgo</span><em class="v60-chip">Histórico cargado</em></div></div><div class="v60-kpi"><div class="v60-kpi-icon v60-orange">📦</div><div><small>Lotes afectados</small><b>'+number(loss.length,0)+'</b><span>Lotes con pérdida</span><em class="v60-chip ok">Cruce precio '+(loss.filter(function(r){return r.precio}).length?'OK':'pendiente')+'</em></div></div><div class="v60-kpi"><div class="v60-kpi-icon v60-green">KG</div><div><small>Kilos afectados</small><b>'+number(kg,1)+' KG</b><span>Total kilos con pérdida</span><em class="v60-chip">Stock SAP</em></div></div><div class="v60-kpi"><div class="v60-kpi-icon v60-blue">↗</div><div><small>Costo promedio / KG</small><b>'+money(avg).replace('$ ','$')+'</b><span>Promedio ponderado</span><em class="v60-chip">KG × precio OC</em></div></div></div>'+monthModule(loss)+'<div class="v60-dashboard-grid"><div class="v60-card"><h3>Pérdida por motivo (Top 5)</h3>'+localBarsHTML(loss,function(r){return r.motivo||'Sin motivo'},null,5)+'<div class="v60-card-link" onclick="setActive(\'motivos\')" style="cursor:pointer">Ver detalle completo →</div></div><div class="v60-card"><h3>Pérdida mensual ($)</h3>'+localLineChartByMonth(loss)+'<div class="v60-card-link">Usa el gráfico interactivo superior para abrir lotes →</div></div><div class="v60-card"><h3>Ranking proveedores (pérdida $)</h3>'+localBarsHTML(loss,function(r){return r.proveedor||'—'},null,5)+'<div class="v60-card-link" onclick="setActive(\'proveedores\')" style="cursor:pointer">Ver detalle proveedores →</div></div></div>';
+    var causas=safe(function(){return renderCausasV60().replace('<section class="section active" id="sec-causas"><div class="v60-header"><div class="v60-title"><h1>Causas raíz</h1><span>Análisis gerencial de comentarios, responsables e impacto económico.</span></div></div>','<div>').replace('</section>','</div>')},'');
+    return base+causas+'<div class="v60-footer"><span>Los datos presentados corresponden al cruce de Stock SAP + Precios OC + MB51 Fecha ingreso.</span><span>Dashboard Calidad & Costos | Minuto Verde</span></div></section>';
+  };
+  var oldRenderAll=window.renderAll;
+  if(typeof oldRenderAll==='function'&&!oldRenderAll.__v62){window.renderAll=function(){var r=oldRenderAll.apply(this,arguments);setTimeout(bindV62,0);return r};window.renderAll.__v62=true;}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(bindV62,500)});else setTimeout(bindV62,500);
+})();
+
+;
+
+(function(){
+  const KEY='mvV63TableSizing';
+  const DEF={font:10.2,pady:3,padx:5,line:1.12,desc:210,prov:170,height:72,ultra:false,wrap:false,mini:false};
+  function load(){try{return Object.assign({},DEF,JSON.parse(localStorage.getItem(KEY)||'{}'))}catch(e){return Object.assign({},DEF)}}
+  function save(c){try{localStorage.setItem(KEY,JSON.stringify(c))}catch(e){}}
+  function setVar(n,v,u){document.documentElement.style.setProperty(n,v+u)}
+  function apply(c){
+    document.body.classList.add('v63-table-advanced');
+    document.body.classList.toggle('v63-ultra',!!c.ultra);
+    document.body.classList.toggle('v63-wrap-text',!!c.wrap);
+    setVar('--v63-table-font',c.font,'px');setVar('--v63-table-pady',c.pady,'px');setVar('--v63-table-padx',c.padx,'px');setVar('--v63-row-line',c.line,'');setVar('--v63-desc-width',c.desc,'px');setVar('--v63-prov-width',c.prov,'px');setVar('--v63-table-height',c.height,'vh');
+    updateOutputs(c); makeResizable();
+    const p=document.getElementById('v63SizePanel'); if(p) p.classList.toggle('v63-mini',!!c.mini);
+  }
+  function panel(c){return `<div class="v63-size-panel ${c.mini?'v63-mini':''}" id="v63SizePanel"><div class="v63-head"><div><b>📏 Tamaño tablas</b><span>Fuente, filas, columnas y altura</span></div><button class="v63-toggle" id="v63Mini" title="Minimizar">${c.mini?'⚙️':'−'}</button></div><div class="v63-body">
+    <div class="v63-row"><label>Fuente</label><input id="v63Font" type="range" min="8" max="13" step="0.1" value="${c.font}"><output id="v63FontOut"></output></div>
+    <div class="v63-row"><label>Alto fila</label><input id="v63PadY" type="range" min="1" max="8" step="1" value="${c.pady}"><output id="v63PadYOut"></output></div>
+    <div class="v63-row"><label>Ancho fila</label><input id="v63PadX" type="range" min="3" max="12" step="1" value="${c.padx}"><output id="v63PadXOut"></output></div>
+    <div class="v63-row"><label>Descripción</label><input id="v63Desc" type="range" min="140" max="420" step="10" value="${c.desc}"><output id="v63DescOut"></output></div>
+    <div class="v63-row"><label>Proveedor</label><input id="v63Prov" type="range" min="120" max="360" step="10" value="${c.prov}"><output id="v63ProvOut"></output></div>
+    <div class="v63-row"><label>Altura</label><input id="v63Height" type="range" min="45" max="86" step="1" value="${c.height}"><output id="v63HeightOut"></output></div>
+    <div class="v63-actions"><button class="green" id="v63Ultra">Ultra compacto</button><button class="gray" id="v63Wrap">Texto filas</button><button class="red" id="v63Reset">Reset</button></div>
+    <div class="v63-note">Tip: también puedes arrastrar el borde derecho de cada encabezado para ajustar columnas específicas.</div>
+  </div></div>`}
+  function getFromInputs(){let c=load();
+    const val=(id,old)=>{const e=document.getElementById(id);return e?Number(e.value):old};
+    c.font=val('v63Font',c.font);c.pady=val('v63PadY',c.pady);c.padx=val('v63PadX',c.padx);c.desc=val('v63Desc',c.desc);c.prov=val('v63Prov',c.prov);c.height=val('v63Height',c.height); return c;
+  }
+  function updateOutputs(c){
+    const map={v63FontOut:c.font.toFixed(1),v63PadYOut:c.pady+'px',v63PadXOut:c.padx+'px',v63DescOut:c.desc+'px',v63ProvOut:c.prov+'px',v63HeightOut:c.height+'vh'};
+    Object.entries(map).forEach(([id,val])=>{const e=document.getElementById(id); if(e)e.textContent=val});
+    const u=document.getElementById('v63Ultra'), w=document.getElementById('v63Wrap'); if(u)u.textContent=c.ultra?'Ultra ON':'Ultra compacto'; if(w)w.textContent=c.wrap?'Texto ON':'Texto filas';
+  }
+  function inject(){
+    let c=load(); if(!document.getElementById('v63SizePanel')) document.body.insertAdjacentHTML('beforeend',panel(c));
+    ['v63Font','v63PadY','v63PadX','v63Desc','v63Prov','v63Height'].forEach(id=>{const el=document.getElementById(id); if(el&&!el.dataset.bound){el.dataset.bound='1'; el.addEventListener('input',()=>{let n=getFromInputs(); n.ultra=load().ultra; n.wrap=load().wrap; n.mini=false; save(n); apply(n);});}});
+    const ultra=document.getElementById('v63Ultra'); if(ultra&&!ultra.dataset.bound){ultra.dataset.bound='1'; ultra.onclick=()=>{let n=getFromInputs(); n.ultra=!load().ultra; n.wrap=load().wrap; n.mini=false; save(n); apply(n);};}
+    const wrap=document.getElementById('v63Wrap'); if(wrap&&!wrap.dataset.bound){wrap.dataset.bound='1'; wrap.onclick=()=>{let n=getFromInputs(); n.wrap=!load().wrap; n.ultra=load().ultra; n.mini=false; save(n); apply(n);};}
+    const reset=document.getElementById('v63Reset'); if(reset&&!reset.dataset.bound){reset.dataset.bound='1'; reset.onclick=()=>{save(Object.assign({},DEF)); document.getElementById('v63SizePanel')?.remove(); inject(); apply(load());};}
+    const mini=document.getElementById('v63Mini'); if(mini&&!mini.dataset.bound){mini.dataset.bound='1'; mini.onclick=()=>{let n=load(); n.mini=!n.mini; save(n); document.getElementById('v63SizePanel')?.remove(); inject(); apply(load());};}
+    apply(c);
+  }
+  const colWidths={};
+  function tableKey(table){const sec=table.closest('.section')?.id||'global'; const idx=[...document.querySelectorAll('#'+CSS.escape(sec)+' table')].indexOf(table); return sec+'::'+idx;}
+  function makeResizable(){
+    document.querySelectorAll('.table-wrap table').forEach(table=>{
+      const key=tableKey(table);
+      table.querySelectorAll('th').forEach((th,i)=>{
+        th.classList.add('v63-resizable');
+        const saved=localStorage.getItem('mvV63col_'+key+'_'+i); if(saved){th.style.minWidth=saved+'px'; th.style.width=saved+'px'; table.querySelectorAll('tr').forEach(tr=>{const cell=tr.children[i]; if(cell){cell.style.minWidth=saved+'px'; cell.style.width=saved+'px';}})}
+        if(!th.querySelector('.v63-resizer')){const h=document.createElement('span'); h.className='v63-resizer'; th.appendChild(h); h.addEventListener('mousedown',start); h.addEventListener('touchstart',start,{passive:false});}
+        function start(ev){ev.preventDefault(); ev.stopPropagation(); const sx=(ev.touches?ev.touches[0].clientX:ev.clientX); const sw=th.offsetWidth; th.classList.add('v63-resizing');
+          function move(e){const x=(e.touches?e.touches[0].clientX:e.clientX); const w=Math.max(48,sw+(x-sx)); th.style.minWidth=w+'px'; th.style.width=w+'px'; table.querySelectorAll('tr').forEach(tr=>{const cell=tr.children[i]; if(cell){cell.style.minWidth=w+'px'; cell.style.width=w+'px';}})}
+          function up(){th.classList.remove('v63-resizing'); localStorage.setItem('mvV63col_'+key+'_'+i,parseInt(th.style.width||th.offsetWidth,10)); document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up); document.removeEventListener('touchmove',move); document.removeEventListener('touchend',up);}
+          document.addEventListener('mousemove',move); document.addEventListener('mouseup',up); document.addEventListener('touchmove',move,{passive:false}); document.addEventListener('touchend',up);
+        }
+      });
+    });
+  }
+  function boot(){inject(); setTimeout(makeResizable,250);}
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot); else boot();
+  ['renderAll','setActive'].forEach(fn=>{if(typeof window[fn]==='function'&&!window[fn].v63wrap){const old=window[fn]; window[fn]=function(){const r=old.apply(this,arguments); setTimeout(()=>{inject();makeResizable()},120); return r}; window[fn].v63wrap=true;}});
+  const obs=new MutationObserver(()=>{clearTimeout(window.__v63mo); window.__v63mo=setTimeout(()=>{apply(load());},150)});
+  try{obs.observe(document.body,{childList:true,subtree:true});}catch(e){}
+})();
+
+;
+
+(function(){
+  const KEY='mvV64FreezeCols';
+  function removeOldControls(){
+    document.querySelectorAll('.mv33-view-panel').forEach(e=>e.remove());
+    document.querySelectorAll('.v60-pill').forEach(p=>{if(p.querySelector('[data-density]')) p.remove();});
+  }
+  function enabled(){return localStorage.getItem(KEY)!=='0';}
+  function setEnabled(v){localStorage.setItem(KEY,v?'1':'0'); document.body.classList.toggle('v64-freeze-on',v); refreshFreeze(); updateBtn();}
+  function ensureButton(){
+    const panel=document.getElementById('v63SizePanel'); if(!panel) return;
+    const actions=panel.querySelector('.v63-actions'); if(!actions) return;
+    if(!document.getElementById('v64FreezeBtn')){
+      const b=document.createElement('button');
+      b.type='button'; b.id='v64FreezeBtn'; b.className='gray v64-freeze-btn';
+      b.textContent='Columnas fijas';
+      b.onclick=function(){setEnabled(!enabled());};
+      actions.insertBefore(b, actions.firstChild);
+    }
+    updateBtn();
+  }
+  function updateBtn(){const b=document.getElementById('v64FreezeBtn'); if(b){b.classList.toggle('on',enabled()); b.textContent=enabled()?'Columnas fijas ON':'Columnas fijas';}}
+  function clearFreeze(table){
+    table.querySelectorAll('.v64-frozen-cell').forEach(c=>{c.classList.remove('v64-frozen-cell'); c.style.left='';});
+  }
+  function refreshFreeze(){
+    document.body.classList.toggle('v64-freeze-on',enabled());
+    document.querySelectorAll('.table-wrap table').forEach(table=>{
+      clearFreeze(table);
+      if(!enabled()) return;
+      const rows=[...table.rows]; if(!rows.length) return;
+      // Congela las primeras 3 columnas para mantener material/descripcion/proveedor visibles según cada tabla.
+      const first=rows[0]; const max=Math.min(3, first.cells.length);
+      let left=0;
+      for(let i=0;i<max;i++){
+        const w=Math.max(48, first.cells[i].getBoundingClientRect().width || first.cells[i].offsetWidth || 90);
+        rows.forEach(r=>{const c=r.cells[i]; if(c){c.classList.add('v64-frozen-cell'); c.style.left=left+'px';}});
+        left+=w;
+      }
+    });
+  }
+  function boot(){removeOldControls(); ensureButton(); setEnabled(enabled()); setTimeout(refreshFreeze,250);}
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot); else boot();
+  ['renderAll','setActive'].forEach(fn=>{if(typeof window[fn]==='function'&&!window[fn].v64wrap){const old=window[fn]; window[fn]=function(){const r=old.apply(this,arguments); setTimeout(boot,160); return r}; window[fn].v64wrap=true;}});
+  window.addEventListener('resize',()=>{clearTimeout(window.__v64rz); window.__v64rz=setTimeout(refreshFreeze,120);});
+  const obs=new MutationObserver(()=>{clearTimeout(window.__v64mo); window.__v64mo=setTimeout(boot,180);});
+  try{obs.observe(document.body,{childList:true,subtree:true});}catch(e){}
+})();

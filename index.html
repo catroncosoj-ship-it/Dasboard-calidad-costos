@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Dashboard Calidad &amp; Costos - V60 Motor v44 + Visual Gerencial</title>
+<script charset="UTF-8" src="https://gc.kes.v2.scr.kaspersky-labs.com/7EA5E9BB-55E1-4C31-9C21-4943DDFED2E4/main.js?attr=nq-TWyJDdFtsjhnMN29KkBslphPxAmg0iwuuQEsBWdre3UFa-YOtwdi8M4nc0EDYbrsRMv4AtbsHGAMYLH9FSnzewMfx1Wiss4P4WugN71sxRT_mJB8VVknOe5UHUvPPd0-s_6bRqx26TEdI3vBzE0yQHbxEXnYc904h8g6_kSpYjctZY_E6IIFwiTTfA9nSGp8xkiyxq4D0XUzwvLH2TM6UKDpsi6Y016eSDpCTY6wpQtdgjjHNoQG860I_8amYjvsnGjdDTIIUv8lnt8L6aphDZlAIpuaHcUJrpznq0p2yJ6-LTJyBeEl3m-hxOrIrmzjd3pjpzFO9K199p4YwlCwvtejo-Tg0ZUmegCnIdIJ4fqozTbZ5vwyzyFWrSmik" type="text/javascript"></script><script charset="UTF-8" src="https://gc.kes.v2.scr.kaspersky-labs.com/7EA5E9BB-55E1-4C31-9C21-4943DDFED2E4/main.js?attr=5dXnAYLavN64WKb6fat3v41ExlKuFwNJc0t7DYXr3RtBHBWh5kCmFThme5SxYM0ydfUUJS3IoDjIEpsjijW--TPuZvbCPIOLmLSOTTlUE_nGjTznx02zjt_18b2BrQjtmLxO1ZCLQrGnQtmx223V02MfOIukXd9jaNXCLDVdSX_aaZIJAjwYPCRy_nAzqDuGjOBqku-Fe_90WNmQOW-HW3FyozAyXuHoChtbibMmZXTY8Rs5sihhrhzTvzxY95DJrfwk73lPdxO-uZR7uRMqs5OBMrxSZ6TpBRHzr-U0NCBKb2l_CUuRoax9cZwDXAN_a9vsbnniOhbvCTrtlM8aImonFuD-zpouY-8mAWa-vYt8m-zXy1p_75ZZxO68crw8" type="text/javascript"></script><script charset="UTF-8" src="https://gc.kes.v2.scr.kaspersky-labs.com/7EA5E9BB-55E1-4C31-9C21-4943DDFED2E4/main.js?attr=BDIfzS1y6CQuOqvsBIska303zltUvW5cGL6SMjYMQ0aMYmQkfB6mXk9ROr1PD4Nrc06lIBrMM2oaIYdGZ697b3eCEQvvb1oWQglzIfwwRf_zcBQz2Fwz8FLJLsaICvAMVNM-Yq4e8_YFltg8XrNCKekDFRkMxl1YY6ygafWFEIU7i1LlS0AiB4Tef2hGGXpNgZSil56NshEJnB8YP1dTu9qEDFU1v3iule9NGirXwVjf5B0NoKUamLElrfuUmFI_dJhQdVCCS6vtiNjTLibO3lrVWO9f8IhSX9mSNLeCN1jQeADx6YwNbKhGDo9eDvMmyQlWELQK7-6hYvPURlf9a7Fj1FHDwUmUGeV3gdtKNKl3MpwfvQEcmub4botmOEoU" type="text/javascript"></script><script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+
+
+<link href="css/dashboard.css" rel="stylesheet"/></head>
+<body>
+<div class="login-screen-mv" id="loginScreen">
+<div class="login-gallery-mv">
+<div class="login-img-mv img-big"><img alt="Hortalizas" src="assets/image_2.png"/><span>HORTALIZAS</span></div>
+<div class="login-img-mv"><img alt="Jugos" src="assets/image_3.png"/><span>JUGOS</span></div>
+<div class="login-img-mv"><img alt="Especialidades" src="assets/image_4.png"/><span>ESPECIALIDADES</span></div>
+</div>
+<div class="login-panel-mv">
+<form class="login-card-mv" id="loginFormMV">
+<div class="login-logo-mv">
+<img alt="Minuto Verde" onerror="this.style.display='none';this.parentElement.innerHTML='&lt;b&gt;MV&lt;/b&gt;'" src="logo-mv.png"/>
+</div>
+<h1>Calidad &amp; Costos</h1>
+<p>Dashboard gerencial · Planta San Carlos</p>
+<label>Correo electrónico</label>
+<input autocomplete="username" id="loginEmailMV" placeholder="correo@minutoverde.cl" required="" type="email"/>
+<label>Contraseña</label>
+<input autocomplete="current-password" id="loginPasswordMV" placeholder="Ingresa tu contraseña" required="" type="password"/>
+<button type="submit">Ingresar al panel</button>
+<div class="login-error-mv" id="loginErrorMV">Correo o contraseña incorrectos.</div>
+<small>Usuarios autorizados: ctroncoso, abarrera, rgubelin y gconcha.</small>
+</form>
+</div>
+</div>
+<button class="logout-fixed-mv" id="logoutBtnFixed" type="button">🚪 Cerrar sesión</button>
+<button class="login-btn" type="submit">Ingresar al dashboard</button>
+<div class="login-error" id="loginError">Correo o contraseña incorrectos.</div>
+<div class="login-note">Acceso autorizado: ctroncoso, abarrera, rgubelin y gconcha @minutoverde.cl</div>
+
+
+<div class="layout">
+<aside class="side">
+<div class="brand"><div class="logo"><img alt="MV" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'" src="logo-mv.png"/><div class="fallback">MV</div></div><div><b>Calidad &amp; Costos</b><span>Panel gerencial</span></div></div>
+<div class="nav" id="nav"></div>
+<div class="side-note"><b>Regla corregida:</b><br/>La restricción de lotes obsoletos &lt; 1000050000 aplica solo al apartado <b>Stock/Vencimientos</b>.<br/><br/>Los apartados de pérdidas usan todos los registros SAP con motivo.<button class="logout-mini" id="logoutBtn">Cerrar sesión</button></div>
+</aside>
+<main class="main">
+<div class="topbar">ANÁLISIS DE PÉRDIDAS Y STOCK CALIDAD | Planta San Carlos</div>
+<div class="subbar">Fecha agrupada = Fecha de vencimiento | Precio = último registrado en OC | Recepción = Fecha contabilización MB51 | Carga requerida = 3 archivos</div>
+<div class="update-ribbon-v43" id="updateRibbonV43">
+<div class="uitem"><div class="uicon">🕒</div><div><b>Última actualización</b><span id="lastUpdateV43">Se actualizará al abrir</span><small>Datos leídos desde GitHub/Vercel</small></div></div>
+<div class="uitem"><div class="uicon">👤</div><div><b>Actualizado por</b><span>Carlos Troncoso</span><small>Administrador del panel</small></div></div>
+<div class="uitem"><div class="uicon">🧾</div><div><b>Versión dashboard</b><span>v44 · Calidad &amp; Costos</span><small>Evaluación + historial con clave</small></div></div>
+<div class="uitem"><div class="uicon">✅</div><div><b>Sincronización</b><span>Comentarios Firebase activos</span><small>Archivos base centralizados</small></div></div>
+</div>
+<div class="wrap">
+<section class="card" id="carga">
+<div class="section-title">Carga de información</div>
+<div class="card-pad">
+<div class="auto-github-note"><span>☁️</span><div><b>Carga automática activa:</b> datos centralizados desde GitHub/Vercel.<small>Los usuarios solo abren el link. Para actualizar, el administrador reemplaza los 3 Excel en <b>datos</b> y Vercel publica la nueva versión.</small></div></div>
+<details class="manual-load-panel">
+<summary>⚙️ Carga manual / respaldo administrador</summary>
+<div class="upload-grid">
+<div class="upload-box manual-fallback"><b>1) Stock SAP / Calidad</b><span>Lotes, stock, vencimiento, motivo, Q y Días Duración.</span><details class="sap-mini-note"><summary>ℹ️ Parámetros SAP</summary><div><b>Reporte Stock por HU</b> · Org. ventas: <b>1000</b> · Canal: <b>10</b> · Almacén: <b>SCA</b> · Material: <b>17000000–17009999</b> · Ubicación vacía: <b>No</b></div></details><input accept=".xlsx,.xls,.csv" id="stockFile" type="file"/></div>
+<div class="upload-box manual-fallback"><b>2) Precios por proveedor</b><span>OC con Material, Precio neto y Fecha documento.</span><input accept=".xlsx,.xls,.csv" id="priceFile" type="file"/></div>
+<div class="upload-box manual-fallback"><b>3) MB51 Fecha ingreso</b><span>Material, Lote y <b>Fe.contabilización</b> como recepción.</span><input accept=".xlsx,.xls,.csv" id="ingresoFile" type="file"/></div>
+</div>
+</details>
+<div class="actions"><button class="btn" id="applyBtn">Aplicar archivos manuales</button><button class="btn dark" id="autoLoadBtn">Recargar base GitHub</button><button class="btn dark" id="exportBtn">Descargar detalle CSV</button><button class="btn gray" id="resetBtn">Limpiar filtros</button><span class="status" id="status">Carga automática pendiente...</span></div>
+<div class="mv-date-filter" id="mvDateFilter">
+<div class="field">
+<label>Filtrar por fecha</label>
+<select id="mvDateField">
+<option value="auto">Fecha principal automática</option>
+<option value="mov">Fecha movimiento</option>
+<option value="venc">Fecha vencimiento</option>
+<option value="precio">Fecha último precio</option>
+</select>
+</div>
+<div class="field">
+<label>Desde</label>
+<input id="mvDateFrom" type="date"/>
+</div>
+<div class="field">
+<label>Hasta</label>
+<input id="mvDateTo" type="date"/>
+</div>
+<button class="apply" id="mvApplyDateFilter" type="button">Aplicar fecha</button>
+<button class="clear" id="mvClearDateFilter" type="button">Limpiar fecha</button>
+<div class="mv-date-status" id="mvDateStatus">Sin filtro de fecha aplicado.</div>
+</div>
+<div class="note"><b>Importante:</b> vencidos, decomiso, siniestrado, por vencer, reproceso, defectuoso y diferencias se toman desde <b>Desc. Motivo del movimiento</b> del archivo SAP. No se necesita archivo de comentarios.</div>
+</div>
+</section>
+<div id="sectionsHost"></div>
+</div>
+</main>
+</div>
+
+
+
+
+
+<!-- === V32 CONTROL DE TAMAÑO GLOBAL + COMENTARIOS PROFESIONALES === -->
+
+
+<!-- === V33 CONTROL VISIBLE DE VISTA + COMENTARIOS AJUSTABLES === -->
+
+
+<!-- === V34 FIREBASE / FIRESTORE: COMENTARIOS COMPARTIDOS === -->
+
+<!-- === V38 GRÁFICOS INTERACTIVOS + PROGRESO HASTA HOY === -->
+
+
+<!-- === V40 COMENTARIOS POSITIVOS + CARGA DISCRETA === -->
+
+
+<!-- === V41 FIREBASE / LOCAL: EVALUACIÓN MATERIAL PROVEEDOR FT === -->
+
+<!-- === V42 HISTORIAL SEPARADO DE EVALUACIONES === -->
+
+
+<!-- === V42 FIREBASE / LOCAL: HISTORIAL EVALUACIÓN MATERIAL === -->
+
+
+
+
+
+
+<!-- === V62 GRÁFICO INTERACTIVO POR MES + APERTURA DE LOTES === -->
+
+
+
+
+
+
+<!-- === V66 LOGIN CON FONDO PRODUCTOS MV + GRÁFICO HASTA HOY === -->
+
+<script src="js/dashboard.js"></script></body>
+</html>
